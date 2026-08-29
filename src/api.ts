@@ -42,6 +42,37 @@ function queryTerms(query: string) {
     .filter(x => x.length > 2);
 }
 
+async function getProblemByNumber(
+  client: Client,
+  problemNumber: number
+) {
+  const result = await client.query(
+    `
+    SELECT
+      id,
+      location_id,
+      problem_number,
+      name,
+      description,
+      status,
+      severity,
+      quantification_mode,
+      evidence_summary,
+      confidence,
+      last_verified_at,
+      recheck_at,
+      created_at,
+      updated_at
+    FROM problems
+    WHERE problem_number = $1
+    LIMIT 1
+    `,
+    [problemNumber]
+  );
+
+  return result.rows[0] ?? null;
+}
+
 async function findOrganizationsForTerms(
   client: Client,
   terms: string[],
@@ -211,27 +242,309 @@ async function dbHealth(env: Env) {
 
 async function databaseSummary(env: Env) {
   try {
-    const result = await withDatabase(env, async client => {
-      const counts = await client.query(`
+    const counts = await withDatabase(env, async client => {
+      const result = await client.query(`
         SELECT
           (SELECT COUNT(*) FROM organizations) AS organizations,
           (SELECT COUNT(*) FROM capabilities) AS capabilities,
           (SELECT COUNT(*) FROM organization_capabilities) AS capability_edges,
           (SELECT COUNT(*) FROM relationships) AS relationships,
           (SELECT COUNT(*) FROM problems) AS problems,
+          (SELECT COUNT(*) FROM problem_capabilities) AS problem_capability_edges,
           (SELECT COUNT(*) FROM projects) AS projects,
           (SELECT COUNT(*) FROM outcomes) AS outcomes,
           (SELECT COUNT(*) FROM ledger_records) AS ledger_records
       `);
 
-      return counts.rows[0];
+      return result.rows[0];
     });
 
     return json({
       ok: true,
       source: "persistent PostgreSQL",
       connection: "Cloudflare Worker -> Hyperdrive -> Neon",
-      counts: result
+      counts
+    });
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      },
+      500
+    );
+  }
+}
+
+async function databaseProblems(env: Env) {
+  try {
+    const problems = await withDatabase(env, async client => {
+      const result = await client.query(`
+        SELECT
+          id,
+          location_id,
+          problem_number,
+          name,
+          description,
+          status,
+          severity,
+          quantification_mode,
+          evidence_summary,
+          confidence,
+          last_verified_at,
+          recheck_at,
+          created_at,
+          updated_at
+        FROM problems
+        ORDER BY problem_number
+      `);
+
+      return result.rows;
+    });
+
+    return json({
+      source: "PostgreSQL unfinished-work registry",
+      count: problems.length,
+      problems
+    });
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      },
+      500
+    );
+  }
+}
+
+async function databaseProblem(
+  env: Env,
+  problemNumber: number
+) {
+  try {
+    const problem = await withDatabase(
+      env,
+      client => getProblemByNumber(client, problemNumber)
+    );
+
+    if (!problem) {
+      return json(
+        { error: "PROBLEM_NOT_FOUND" },
+        404
+      );
+    }
+
+    return json({
+      source: "PostgreSQL unfinished-work registry",
+      problem
+    });
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      },
+      500
+    );
+  }
+}
+
+async function problemCapabilities(
+  env: Env,
+  problemNumber: number
+) {
+  try {
+    const result = await withDatabase(
+      env,
+      async client => {
+        const problem =
+          await getProblemByNumber(
+            client,
+            problemNumber
+          );
+
+        if (!problem) {
+          return null;
+        }
+
+        const capabilities =
+          await client.query(
+            `
+            SELECT
+              c.id,
+              c.name,
+              c.category,
+              pc.relevance_type,
+              pc.evidence_note,
+
+              COALESCE(
+                json_agg(
+                  json_build_object(
+                    'id', o.id,
+                    'display_name', o.display_name,
+                    'organization_type', o.organization_type,
+                    'website', o.website,
+                    'current_capacity', o.current_capacity
+                  )
+                  ORDER BY o.display_name
+                ) FILTER (WHERE o.id IS NOT NULL),
+                '[]'::json
+              ) AS organizations
+
+            FROM problem_capabilities pc
+
+            JOIN capabilities c
+              ON c.id = pc.capability_id
+
+            LEFT JOIN organization_capabilities oc
+              ON oc.capability_id = c.id
+
+            LEFT JOIN organizations o
+              ON o.id = oc.organization_id
+
+            WHERE pc.problem_id = $1
+
+            GROUP BY
+              c.id,
+              c.name,
+              c.category,
+              pc.relevance_type,
+              pc.evidence_note
+
+            ORDER BY c.name
+            `,
+            [problem.id]
+          );
+
+        return {
+          problem,
+          capabilities: capabilities.rows
+        };
+      }
+    );
+
+    if (!result) {
+      return json(
+        { error: "PROBLEM_NOT_FOUND" },
+        404
+      );
+    }
+
+    return json({
+      source: "PostgreSQL problem-capability graph",
+      problem: result.problem,
+      capability_count:
+        result.capabilities.length,
+      capabilities: result.capabilities
+    });
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      },
+      500
+    );
+  }
+}
+
+async function suggestProblemCapabilities(
+  env: Env,
+  problemNumber: number
+) {
+  try {
+    const result = await withDatabase(
+      env,
+      async client => {
+        const problem =
+          await getProblemByNumber(
+            client,
+            problemNumber
+          );
+
+        if (!problem) {
+          return null;
+        }
+
+        const problemTerms =
+          queryTerms(problem.name);
+
+        const capabilities =
+          await client.query(
+            `
+            SELECT
+              c.id,
+              c.name,
+              c.category,
+
+              (
+                SELECT COUNT(*)
+                FROM unnest($1::text[]) AS term
+                WHERE LOWER(
+                  COALESCE(c.name, '') || ' ' ||
+                  COALESCE(c.category, '')
+                )
+                LIKE '%' || term || '%'
+              ) AS lexical_score
+
+            FROM capabilities c
+
+            WHERE (
+              SELECT COUNT(*)
+              FROM unnest($1::text[]) AS term
+              WHERE LOWER(
+                COALESCE(c.name, '') || ' ' ||
+                COALESCE(c.category, '')
+              )
+              LIKE '%' || term || '%'
+            ) > 0
+
+            ORDER BY
+              lexical_score DESC,
+              c.name ASC
+            `,
+            [problemTerms]
+          );
+
+        return {
+          problem,
+          problemTerms,
+          suggestions:
+            capabilities.rows
+        };
+      }
+    );
+
+    if (!result) {
+      return json(
+        { error: "PROBLEM_NOT_FOUND" },
+        404
+      );
+    }
+
+    return json({
+      source:
+        "review-only lexical suggestion engine",
+      writes_database: false,
+      problem: result.problem,
+      terms: result.problemTerms,
+      suggestion_count:
+        result.suggestions.length,
+      suggestions:
+        result.suggestions.map(
+          (row: any) => ({
+            capability_id: row.id,
+            capability_name: row.name,
+            category: row.category,
+            lexical_score:
+              Number(row.lexical_score),
+            classification:
+              "REVIEW_REQUIRED",
+            note:
+              "This is only a lexical candidate. It has not been approved as relevant to the problem."
+          })
+        )
     });
   } catch (error) {
     return json(
@@ -392,103 +705,6 @@ async function databaseOrganization(
   }
 }
 
-async function databaseProblems(env: Env) {
-  try {
-    const problems = await withDatabase(env, async client => {
-      const result = await client.query(`
-        SELECT
-          id,
-          location_id,
-          problem_number,
-          name,
-          description,
-          status,
-          severity,
-          quantification_mode,
-          evidence_summary,
-          confidence,
-          last_verified_at,
-          recheck_at,
-          created_at,
-          updated_at
-        FROM problems
-        ORDER BY problem_number
-      `);
-
-      return result.rows;
-    });
-
-    return json({
-      source: "PostgreSQL unfinished-work registry",
-      count: problems.length,
-      problems
-    });
-  } catch (error) {
-    return json(
-      {
-        ok: false,
-        error: error instanceof Error ? error.message : String(error)
-      },
-      500
-    );
-  }
-}
-
-async function databaseProblem(
-  env: Env,
-  problemNumber: number
-) {
-  try {
-    const problem = await withDatabase(env, async client => {
-      const result = await client.query(
-        `
-        SELECT
-          id,
-          location_id,
-          problem_number,
-          name,
-          description,
-          status,
-          severity,
-          quantification_mode,
-          evidence_summary,
-          confidence,
-          last_verified_at,
-          recheck_at,
-          created_at,
-          updated_at
-        FROM problems
-        WHERE problem_number = $1
-        LIMIT 1
-        `,
-        [problemNumber]
-      );
-
-      return result.rows[0] ?? null;
-    });
-
-    if (!problem) {
-      return json(
-        { error: "PROBLEM_NOT_FOUND" },
-        404
-      );
-    }
-
-    return json({
-      source: "PostgreSQL unfinished-work registry",
-      problem
-    });
-  } catch (error) {
-    return json(
-      {
-        ok: false,
-        error: error instanceof Error ? error.message : String(error)
-      },
-      500
-    );
-  }
-}
-
 async function databaseMatches(
   env: Env,
   query: string
@@ -498,24 +714,37 @@ async function databaseMatches(
 
     const matches = await withDatabase(
       env,
-      client => findOrganizationsForTerms(client, terms, 20)
+      client =>
+        findOrganizationsForTerms(
+          client,
+          terms,
+          20
+        )
     );
 
     return json({
       query,
-      source: "PostgreSQL civic graph",
+      source:
+        "PostgreSQL civic graph",
       terms,
-      results: matches.map((row: any) => ({
-        organization: {
-          id: row.id,
-          display_name: row.display_name,
-          organization_type: row.organization_type,
-          website: row.website,
-          verified_capabilities: row.verified_capabilities,
-          current_capacity: row.current_capacity
-        },
-        score: Number(row.match_count)
-      }))
+      results: matches.map(
+        (row: any) => ({
+          organization: {
+            id: row.id,
+            display_name:
+              row.display_name,
+            organization_type:
+              row.organization_type,
+            website: row.website,
+            verified_capabilities:
+              row.verified_capabilities,
+            current_capacity:
+              row.current_capacity
+          },
+          score:
+            Number(row.match_count)
+        })
+      )
     });
   } catch (error) {
     return json(
@@ -535,14 +764,21 @@ async function databaseRelationship(
   b: string
 ) {
   try {
-    const relationship = await withDatabase(
-      env,
-      client => existingRelationship(client, a, b)
-    );
+    const relationship =
+      await withDatabase(
+        env,
+        client =>
+          existingRelationship(
+            client,
+            a,
+            b
+          )
+      );
 
     if (!relationship) {
       return json({
-        source: "PostgreSQL civic graph",
+        source:
+          "PostgreSQL civic graph",
         relationship_found: false,
         relationship: null,
         interpretation:
@@ -551,7 +787,8 @@ async function databaseRelationship(
     }
 
     return json({
-      source: "PostgreSQL civic graph",
+      source:
+        "PostgreSQL civic graph",
       relationship_found: true,
       novelty_allowed: false,
       relationship
@@ -572,72 +809,97 @@ async function whoShouldTalk(
   query: string
 ) {
   try {
-    const terms = queryTerms(query);
+    const terms =
+      queryTerms(query);
 
-    const candidates = await withDatabase(
-      env,
-      async client => {
-        const organizations =
-          await findOrganizationsForTerms(
-            client,
-            terms,
-            6
-          );
+    const candidates =
+      await withDatabase(
+        env,
+        async client => {
+          const organizations =
+            await findOrganizationsForTerms(
+              client,
+              terms,
+              6
+            );
 
-        const pairs: any[] = [];
+          const pairs: any[] = [];
 
-        for (let i = 0; i < organizations.length; i++) {
-          for (let j = i + 1; j < organizations.length; j++) {
-            const a = organizations[i];
-            const b = organizations[j];
+          for (
+            let i = 0;
+            i < organizations.length;
+            i++
+          ) {
+            for (
+              let j = i + 1;
+              j < organizations.length;
+              j++
+            ) {
+              const a =
+                organizations[i];
+              const b =
+                organizations[j];
 
-            const relationship =
-              await existingRelationship(
-                client,
-                a.id,
-                b.id
-              );
+              const relationship =
+                await existingRelationship(
+                  client,
+                  a.id,
+                  b.id
+                );
 
-            const scoreA = Number(a.match_count);
-            const scoreB = Number(b.match_count);
+              const scoreA =
+                Number(a.match_count);
+              const scoreB =
+                Number(b.match_count);
 
-            let classification =
-              "NEEDS_MORE_EVIDENCE";
+              let classification =
+                "NEEDS_MORE_EVIDENCE";
 
-            if (relationship) {
-              classification =
-                "REDUNDANT_ALREADY_EXISTS";
-            } else if (scoreA >= 2 && scoreB >= 2) {
-              classification =
-                "NOVEL_CANDIDATE";
+              if (relationship) {
+                classification =
+                  "REDUNDANT_ALREADY_EXISTS";
+              } else if (
+                scoreA >= 2 &&
+                scoreB >= 2
+              ) {
+                classification =
+                  "NOVEL_CANDIDATE";
+              }
+
+              pairs.push({
+                classification,
+                organization_a: {
+                  id: a.id,
+                  name:
+                    a.display_name,
+                  relevance_score:
+                    scoreA
+                },
+                organization_b: {
+                  id: b.id,
+                  name:
+                    b.display_name,
+                  relevance_score:
+                    scoreB
+                },
+                existing_relationship:
+                  relationship,
+                human_review_required:
+                  true
+              });
             }
-
-            pairs.push({
-              classification,
-              organization_a: {
-                id: a.id,
-                name: a.display_name,
-                relevance_score: scoreA
-              },
-              organization_b: {
-                id: b.id,
-                name: b.display_name,
-                relevance_score: scoreB
-              },
-              existing_relationship: relationship,
-              human_review_required: true
-            });
           }
-        }
 
-        return pairs;
-      }
-    );
+          return pairs;
+        }
+      );
 
     return json({
       query,
-      source: "PostgreSQL civic graph",
-      engine: "FixLine Who Should Talk v0.1",
+      source:
+        "PostgreSQL civic graph",
+      engine:
+        "FixLine Who Should Talk v0.1",
       candidates
     });
   } catch (error) {
@@ -645,7 +907,10 @@ async function whoShouldTalk(
       {
         ok: false,
         query,
-        error: error instanceof Error ? error.message : String(error)
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error)
       },
       500
     );
@@ -656,97 +921,183 @@ export async function handleApi(
   request: Request,
   env: Env
 ): Promise<Response> {
-  const url = new URL(request.url);
+  const url =
+    new URL(request.url);
 
   if (url.pathname === "/health") {
     return json({
       ok: true,
       service: "FixLine",
       mode: env.FIXLINE_MODE,
-      time: new Date().toISOString()
+      time:
+        new Date().toISOString()
     });
   }
 
-  if (url.pathname === "/api/db-health") {
+  if (
+    url.pathname ===
+    "/api/db-health"
+  ) {
     return dbHealth(env);
   }
 
-  if (url.pathname === "/api/database") {
+  if (
+    url.pathname ===
+    "/api/database"
+  ) {
     return databaseSummary(env);
   }
 
-  if (url.pathname === "/api/stats") {
+  if (
+    url.pathname ===
+    "/api/stats"
+  ) {
     return json(pilotStats());
   }
 
-  if (url.pathname === "/api/problems") {
+  if (
+    url.pathname ===
+    "/api/problems"
+  ) {
     return databaseProblems(env);
   }
 
-  if (url.pathname.startsWith("/api/problems/")) {
-    const raw = url.pathname.split("/").pop()!;
-    const problemNumber = Number(raw);
+  const capabilityMatch =
+    url.pathname.match(
+      /^\/api\/problems\/(\d+)\/capabilities$/
+    );
 
-    if (!Number.isInteger(problemNumber)) {
-      return json(
-        { error: "INVALID_PROBLEM_NUMBER" },
-        400
-      );
-    }
-
-    return databaseProblem(env, problemNumber);
+  if (capabilityMatch) {
+    return problemCapabilities(
+      env,
+      Number(capabilityMatch[1])
+    );
   }
 
-  if (url.pathname === "/api/organizations") {
+  const suggestionMatch =
+    url.pathname.match(
+      /^\/api\/problems\/(\d+)\/suggest-capabilities$/
+    );
+
+  if (suggestionMatch) {
+    return suggestProblemCapabilities(
+      env,
+      Number(suggestionMatch[1])
+    );
+  }
+
+  const problemMatch =
+    url.pathname.match(
+      /^\/api\/problems\/(\d+)$/
+    );
+
+  if (problemMatch) {
+    return databaseProblem(
+      env,
+      Number(problemMatch[1])
+    );
+  }
+
+  if (
+    url.pathname ===
+    "/api/organizations"
+  ) {
     return databaseOrganizations(env);
   }
 
-  if (url.pathname.startsWith("/api/organizations/")) {
-    const id = decodeURIComponent(
-      url.pathname.split("/").pop()!
-    );
+  if (
+    url.pathname.startsWith(
+      "/api/organizations/"
+    )
+  ) {
+    const id =
+      decodeURIComponent(
+        url.pathname
+          .split("/")
+          .pop()!
+      );
 
-    return databaseOrganization(env, id);
+    return databaseOrganization(
+      env,
+      id
+    );
   }
 
-  if (url.pathname === "/api/matches") {
-    const q = url.searchParams.get("q")?.trim() ?? "";
+  if (
+    url.pathname ===
+    "/api/matches"
+  ) {
+    const q =
+      url.searchParams
+        .get("q")
+        ?.trim() ?? "";
 
     if (!q) {
       return json(
-        { error: "QUERY_REQUIRED" },
+        {
+          error:
+            "QUERY_REQUIRED"
+        },
         400
       );
     }
 
-    return databaseMatches(env, q);
+    return databaseMatches(
+      env,
+      q
+    );
   }
 
-  if (url.pathname === "/api/relationship") {
-    const a = url.searchParams.get("a");
-    const b = url.searchParams.get("b");
+  if (
+    url.pathname ===
+    "/api/relationship"
+  ) {
+    const a =
+      url.searchParams.get("a");
+
+    const b =
+      url.searchParams.get("b");
 
     if (!a || !b) {
       return json(
-        { error: "A_AND_B_REQUIRED" },
+        {
+          error:
+            "A_AND_B_REQUIRED"
+        },
         400
       );
     }
 
-    return databaseRelationship(env, a, b);
+    return databaseRelationship(
+      env,
+      a,
+      b
+    );
   }
 
-  if (url.pathname === "/api/who-should-talk") {
-    const q = url.searchParams.get("q")?.trim() ?? "";
+  if (
+    url.pathname ===
+    "/api/who-should-talk"
+  ) {
+    const q =
+      url.searchParams
+        .get("q")
+        ?.trim() ?? "";
 
     if (!q) {
       return json(
-        { error: "QUERY_REQUIRED" },
+        {
+          error:
+            "QUERY_REQUIRED"
+        },
         400
       );
     }
 
-    return whoShouldTalk(env, q);
+    return whoShouldTalk(
+      env,
+      q
+    );
   }
 
   return json(
