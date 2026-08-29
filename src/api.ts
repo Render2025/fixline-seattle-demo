@@ -1,7 +1,5 @@
 import { Client } from "pg";
-import {
-  pilotStats
-} from "./core";
+import { pilotStats } from "./core";
 import type { Env } from "./types";
 
 function json(data: unknown, status = 200) {
@@ -34,6 +32,151 @@ async function withDatabase<T>(
   } finally {
     await client.end();
   }
+}
+
+function queryTerms(query: string) {
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .map(x => x.trim())
+    .filter(x => x.length > 2);
+}
+
+async function findOrganizationsForTerms(
+  client: Client,
+  terms: string[],
+  limit = 10
+) {
+  if (!terms.length) return [];
+
+  const result = await client.query(
+    `
+    WITH org_data AS (
+      SELECT
+        o.id,
+        o.location_id,
+        o.display_name,
+        o.organization_type,
+        o.verification_status,
+        o.website,
+        o.service_area,
+        o.status,
+        o.last_verified_at,
+        o.availability_or_constraints,
+        o.source_authority,
+        o.evidence_note,
+        o.current_capacity,
+
+        COALESCE(
+          json_agg(
+            c.name
+            ORDER BY c.name
+          ) FILTER (WHERE c.id IS NOT NULL),
+          '[]'::json
+        ) AS verified_capabilities,
+
+        LOWER(
+          COALESCE(o.display_name, '') || ' ' ||
+          COALESCE(o.organization_type, '') || ' ' ||
+          COALESCE(string_agg(c.name, ' '), '')
+        ) AS search_text
+
+      FROM organizations o
+
+      LEFT JOIN organization_capabilities oc
+        ON oc.organization_id = o.id
+
+      LEFT JOIN capabilities c
+        ON c.id = oc.capability_id
+
+      GROUP BY
+        o.id,
+        o.location_id,
+        o.display_name,
+        o.organization_type,
+        o.verification_status,
+        o.website,
+        o.service_area,
+        o.status,
+        o.last_verified_at,
+        o.availability_or_constraints,
+        o.source_authority,
+        o.evidence_note,
+        o.current_capacity
+    )
+
+    SELECT
+      *,
+      (
+        SELECT COUNT(*)
+        FROM unnest($1::text[]) AS term
+        WHERE search_text LIKE '%' || term || '%'
+      ) AS match_count
+
+    FROM org_data
+
+    WHERE (
+      SELECT COUNT(*)
+      FROM unnest($1::text[]) AS term
+      WHERE search_text LIKE '%' || term || '%'
+    ) > 0
+
+    ORDER BY
+      match_count DESC,
+      display_name ASC
+
+    LIMIT $2
+    `,
+    [terms, limit]
+  );
+
+  return result.rows;
+}
+
+async function existingRelationship(
+  client: Client,
+  a: string,
+  b: string
+) {
+  const result = await client.query(
+    `
+    SELECT
+      r.id,
+      r.organization_a_id,
+      oa.display_name AS organization_a_name,
+      r.organization_b_id,
+      ob.display_name AS organization_b_name,
+      r.relationship_type,
+      r.status,
+      r.evidence_note,
+      r.source_url,
+      r.verified_at
+
+    FROM relationships r
+
+    LEFT JOIN organizations oa
+      ON oa.id = r.organization_a_id
+
+    LEFT JOIN organizations ob
+      ON ob.id = r.organization_b_id
+
+    WHERE
+      (
+        r.organization_a_id = $1
+        AND r.organization_b_id = $2
+      )
+      OR
+      (
+        r.organization_a_id = $2
+        AND r.organization_b_id = $1
+      )
+
+    LIMIT 1
+    `,
+    [a, b]
+  );
+
+  return result.rows[0] ?? null;
 }
 
 async function dbHealth(env: Env) {
@@ -265,102 +408,12 @@ async function databaseMatches(
   query: string
 ) {
   try {
-    const terms = query
-      .toLowerCase()
-      .split(/\s+/)
-      .map(x => x.trim())
-      .filter(x => x.length > 2);
+    const terms = queryTerms(query);
 
-    if (!terms.length) {
-      return json({
-        query,
-        source: "PostgreSQL civic graph",
-        results: []
-      });
-    }
-
-    const matches = await withDatabase(env, async client => {
-      const result = await client.query(
-        `
-        WITH org_data AS (
-          SELECT
-            o.id,
-            o.location_id,
-            o.display_name,
-            o.organization_type,
-            o.verification_status,
-            o.website,
-            o.service_area,
-            o.status,
-            o.last_verified_at,
-            o.availability_or_constraints,
-            o.source_authority,
-            o.evidence_note,
-            o.current_capacity,
-
-            COALESCE(
-              json_agg(
-                c.name
-                ORDER BY c.name
-              ) FILTER (WHERE c.id IS NOT NULL),
-              '[]'::json
-            ) AS verified_capabilities,
-
-            LOWER(
-              COALESCE(o.display_name, '') || ' ' ||
-              COALESCE(o.organization_type, '') || ' ' ||
-              COALESCE(string_agg(c.name, ' '), '')
-            ) AS search_text
-
-          FROM organizations o
-
-          LEFT JOIN organization_capabilities oc
-            ON oc.organization_id = o.id
-
-          LEFT JOIN capabilities c
-            ON c.id = oc.capability_id
-
-          GROUP BY
-            o.id,
-            o.location_id,
-            o.display_name,
-            o.organization_type,
-            o.verification_status,
-            o.website,
-            o.service_area,
-            o.status,
-            o.last_verified_at,
-            o.availability_or_constraints,
-            o.source_authority,
-            o.evidence_note,
-            o.current_capacity
-        )
-
-        SELECT
-          *,
-          (
-            SELECT COUNT(*)
-            FROM unnest($1::text[]) AS term
-            WHERE search_text LIKE '%' || term || '%'
-          ) AS match_count
-
-        FROM org_data
-
-        WHERE (
-          SELECT COUNT(*)
-          FROM unnest($1::text[]) AS term
-          WHERE search_text LIKE '%' || term || '%'
-        ) > 0
-
-        ORDER BY
-          match_count DESC,
-          display_name ASC
-        `,
-        [terms]
-      );
-
-      return result.rows;
-    });
+    const matches = await withDatabase(
+      env,
+      client => findOrganizationsForTerms(client, terms, 20)
+    );
 
     return json({
       query,
@@ -409,53 +462,12 @@ async function databaseRelationship(
   b: string
 ) {
   try {
-    const result = await withDatabase(
+    const relationship = await withDatabase(
       env,
-      async client => {
-        const query = await client.query(
-          `
-          SELECT
-            r.id,
-            r.organization_a_id,
-            oa.display_name AS organization_a_name,
-            r.organization_b_id,
-            ob.display_name AS organization_b_name,
-            r.relationship_type,
-            r.status,
-            r.evidence_note,
-            r.source_url,
-            r.verified_at,
-            r.created_at
-
-          FROM relationships r
-
-          LEFT JOIN organizations oa
-            ON oa.id = r.organization_a_id
-
-          LEFT JOIN organizations ob
-            ON ob.id = r.organization_b_id
-
-          WHERE
-            (
-              r.organization_a_id = $1
-              AND r.organization_b_id = $2
-            )
-            OR
-            (
-              r.organization_a_id = $2
-              AND r.organization_b_id = $1
-            )
-
-          ORDER BY r.verified_at DESC NULLS LAST
-          `,
-          [a, b]
-        );
-
-        return query.rows;
-      }
+      client => existingRelationship(client, a, b)
     );
 
-    if (!result.length) {
+    if (!relationship) {
       return json({
         source: "PostgreSQL civic graph",
         relationship_found: false,
@@ -469,15 +481,213 @@ async function databaseRelationship(
       source: "PostgreSQL civic graph",
       relationship_found: true,
       novelty_allowed: false,
-      relationship: result,
+      relationship,
       interpretation:
-        "FixLine found an existing relationship record. Do not present this pair as a novel introduction without further review."
+        "FixLine found an existing relationship record. Do not present this pair as a novel introduction."
     });
   } catch (error) {
     return json(
       {
         ok: false,
         error: error instanceof Error ? error.message : String(error)
+      },
+      500
+    );
+  }
+}
+
+async function whoShouldTalk(
+  env: Env,
+  query: string
+) {
+  try {
+    const terms = queryTerms(query);
+
+    if (!terms.length) {
+      return json({
+        query,
+        source: "PostgreSQL civic graph",
+        candidates: []
+      });
+    }
+
+    const candidates = await withDatabase(
+      env,
+      async client => {
+        /*
+          Keep the first demonstration intentionally bounded.
+
+          We retrieve the six strongest matching organizations,
+          then evaluate every unique pair.
+        */
+        const organizations =
+          await findOrganizationsForTerms(
+            client,
+            terms,
+            6
+          );
+
+        const pairs: any[] = [];
+
+        for (let i = 0; i < organizations.length; i++) {
+          for (
+            let j = i + 1;
+            j < organizations.length;
+            j++
+          ) {
+            const a = organizations[i];
+            const b = organizations[j];
+
+            const relationship =
+              await existingRelationship(
+                client,
+                a.id,
+                b.id
+              );
+
+            const scoreA = Number(a.match_count);
+            const scoreB = Number(b.match_count);
+
+            let classification:
+              | "REDUNDANT_ALREADY_EXISTS"
+              | "NOVEL_CANDIDATE"
+              | "NEEDS_MORE_EVIDENCE";
+
+            let explanation: string;
+
+            if (relationship) {
+              classification =
+                "REDUNDANT_ALREADY_EXISTS";
+
+              explanation =
+                "FixLine already contains evidence of a relationship between these organizations. Do not present this as a novel introduction.";
+            } else if (
+              scoreA >= 2 &&
+              scoreB >= 2
+            ) {
+              classification =
+                "NOVEL_CANDIDATE";
+
+              explanation =
+                "Both organizations strongly match the civic need and FixLine currently has no relationship record between them. Novelty is not yet independently verified.";
+            } else {
+              classification =
+                "NEEDS_MORE_EVIDENCE";
+
+              explanation =
+                "Both organizations have some relevance, but the current evidence is not strong enough to recommend an introduction without additional review.";
+            }
+
+            pairs.push({
+              classification,
+
+              organization_a: {
+                id: a.id,
+                name: a.display_name,
+                relevance_score: scoreA,
+                current_capacity:
+                  a.current_capacity,
+                capabilities:
+                  a.verified_capabilities
+              },
+
+              organization_b: {
+                id: b.id,
+                name: b.display_name,
+                relevance_score: scoreB,
+                current_capacity:
+                  b.current_capacity,
+                capabilities:
+                  b.verified_capabilities
+              },
+
+              existing_relationship:
+                relationship,
+
+              explanation,
+
+              safety_and_uncertainty: {
+                capability_is_not_capacity: true,
+                absence_of_relationship_record_does_not_prove_novelty:
+                  true,
+                human_review_required: true
+              }
+            });
+          }
+        }
+
+        const rank = {
+          NOVEL_CANDIDATE: 1,
+          NEEDS_MORE_EVIDENCE: 2,
+          REDUNDANT_ALREADY_EXISTS: 3
+        };
+
+        pairs.sort((x, y) => {
+          const classDifference =
+            rank[x.classification] -
+            rank[y.classification];
+
+          if (classDifference !== 0) {
+            return classDifference;
+          }
+
+          const xScore =
+            x.organization_a.relevance_score +
+            x.organization_b.relevance_score;
+
+          const yScore =
+            y.organization_a.relevance_score +
+            y.organization_b.relevance_score;
+
+          return yScore - xScore;
+        });
+
+        return pairs;
+      }
+    );
+
+    const summary = {
+      novel_candidates:
+        candidates.filter(
+          x =>
+            x.classification ===
+            "NOVEL_CANDIDATE"
+        ).length,
+
+      needs_more_evidence:
+        candidates.filter(
+          x =>
+            x.classification ===
+            "NEEDS_MORE_EVIDENCE"
+        ).length,
+
+      redundant_existing:
+        candidates.filter(
+          x =>
+            x.classification ===
+            "REDUNDANT_ALREADY_EXISTS"
+        ).length
+    };
+
+    return json({
+      query,
+      source: "PostgreSQL civic graph",
+      engine:
+        "FixLine Who Should Talk v0.1",
+      interpretation:
+        "These are advisory civic-intelligence hypotheses, not instructions or confirmed partnerships.",
+      summary,
+      candidates
+    });
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        query,
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error)
       },
       500
     );
@@ -515,7 +725,11 @@ export async function handleApi(
     return databaseOrganizations(env);
   }
 
-  if (url.pathname.startsWith("/api/organizations/")) {
+  if (
+    url.pathname.startsWith(
+      "/api/organizations/"
+    )
+  ) {
     const id = decodeURIComponent(
       url.pathname.split("/").pop()!
     );
@@ -524,7 +738,9 @@ export async function handleApi(
   }
 
   if (url.pathname === "/api/matches") {
-    const q = url.searchParams.get("q")?.trim() ?? "";
+    const q =
+      url.searchParams.get("q")?.trim() ??
+      "";
 
     if (!q) {
       return json(
@@ -536,22 +752,56 @@ export async function handleApi(
     return databaseMatches(env, q);
   }
 
-  /*
-    RELATIONSHIP DETECTION IS NOW POSTGRESQL-BACKED.
-  */
+  if (
+    url.pathname ===
+    "/api/relationship"
+  ) {
+    const a =
+      url.searchParams.get("a");
 
-  if (url.pathname === "/api/relationship") {
-    const a = url.searchParams.get("a");
-    const b = url.searchParams.get("b");
+    const b =
+      url.searchParams.get("b");
 
     if (!a || !b) {
       return json(
-        { error: "A_AND_B_REQUIRED" },
+        {
+          error:
+            "A_AND_B_REQUIRED"
+        },
         400
       );
     }
 
-    return databaseRelationship(env, a, b);
+    return databaseRelationship(
+      env,
+      a,
+      b
+    );
+  }
+
+  /*
+    FIRST CIVIC-INTELLIGENCE ENDPOINT.
+  */
+
+  if (
+    url.pathname ===
+    "/api/who-should-talk"
+  ) {
+    const q =
+      url.searchParams.get("q")?.trim() ??
+      "";
+
+    if (!q) {
+      return json(
+        {
+          error:
+            "QUERY_REQUIRED"
+        },
+        400
+      );
+    }
+
+    return whoShouldTalk(env, q);
   }
 
   return json(
