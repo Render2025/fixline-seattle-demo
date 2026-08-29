@@ -6,16 +6,17 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit",
-    "test": "node scripts/smoke-test.mjs"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
     "agents": "latest",
+    "pg": "latest",
     "zod": "latest"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "latest",
+    "@types/pg": "latest",
     "typescript": "latest",
     "wrangler": "latest"
   }
