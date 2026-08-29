@@ -1,6 +1,5 @@
 import { Client } from "pg";
 import {
-  knownRelationship,
   pilotStats
 } from "./core";
 import type { Env } from "./types";
@@ -404,6 +403,87 @@ async function databaseMatches(
   }
 }
 
+async function databaseRelationship(
+  env: Env,
+  a: string,
+  b: string
+) {
+  try {
+    const result = await withDatabase(
+      env,
+      async client => {
+        const query = await client.query(
+          `
+          SELECT
+            r.id,
+            r.organization_a_id,
+            oa.display_name AS organization_a_name,
+            r.organization_b_id,
+            ob.display_name AS organization_b_name,
+            r.relationship_type,
+            r.status,
+            r.evidence_note,
+            r.source_url,
+            r.verified_at,
+            r.created_at
+
+          FROM relationships r
+
+          LEFT JOIN organizations oa
+            ON oa.id = r.organization_a_id
+
+          LEFT JOIN organizations ob
+            ON ob.id = r.organization_b_id
+
+          WHERE
+            (
+              r.organization_a_id = $1
+              AND r.organization_b_id = $2
+            )
+            OR
+            (
+              r.organization_a_id = $2
+              AND r.organization_b_id = $1
+            )
+
+          ORDER BY r.verified_at DESC NULLS LAST
+          `,
+          [a, b]
+        );
+
+        return query.rows;
+      }
+    );
+
+    if (!result.length) {
+      return json({
+        source: "PostgreSQL civic graph",
+        relationship_found: false,
+        relationship: null,
+        interpretation:
+          "No relationship is recorded in the bounded FixLine graph. This does not prove that no real-world relationship exists."
+      });
+    }
+
+    return json({
+      source: "PostgreSQL civic graph",
+      relationship_found: true,
+      novelty_allowed: false,
+      relationship: result,
+      interpretation:
+        "FixLine found an existing relationship record. Do not present this pair as a novel introduction without further review."
+    });
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      },
+      500
+    );
+  }
+}
+
 export async function handleApi(
   request: Request,
   env: Env
@@ -443,10 +523,6 @@ export async function handleApi(
     return databaseOrganization(env, id);
   }
 
-  /*
-    SEARCH NOW RUNS AGAINST POSTGRESQL.
-  */
-
   if (url.pathname === "/api/matches") {
     const q = url.searchParams.get("q")?.trim() ?? "";
 
@@ -461,8 +537,7 @@ export async function handleApi(
   }
 
   /*
-    Relationship lookup is still using the bounded
-    relationship helper for one more step.
+    RELATIONSHIP DETECTION IS NOW POSTGRESQL-BACKED.
   */
 
   if (url.pathname === "/api/relationship") {
@@ -476,9 +551,7 @@ export async function handleApi(
       );
     }
 
-    return json({
-      relationship: knownRelationship(a, b)
-    });
+    return databaseRelationship(env, a, b);
   }
 
   return json(
