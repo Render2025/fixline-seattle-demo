@@ -1,6 +1,5 @@
 import { Client } from "pg";
 import {
-  findMatches,
   knownRelationship,
   pilotStats
 } from "./core";
@@ -262,6 +261,149 @@ async function databaseOrganization(
   }
 }
 
+async function databaseMatches(
+  env: Env,
+  query: string
+) {
+  try {
+    const terms = query
+      .toLowerCase()
+      .split(/\s+/)
+      .map(x => x.trim())
+      .filter(x => x.length > 2);
+
+    if (!terms.length) {
+      return json({
+        query,
+        source: "PostgreSQL civic graph",
+        results: []
+      });
+    }
+
+    const matches = await withDatabase(env, async client => {
+      const result = await client.query(
+        `
+        WITH org_data AS (
+          SELECT
+            o.id,
+            o.location_id,
+            o.display_name,
+            o.organization_type,
+            o.verification_status,
+            o.website,
+            o.service_area,
+            o.status,
+            o.last_verified_at,
+            o.availability_or_constraints,
+            o.source_authority,
+            o.evidence_note,
+            o.current_capacity,
+
+            COALESCE(
+              json_agg(
+                c.name
+                ORDER BY c.name
+              ) FILTER (WHERE c.id IS NOT NULL),
+              '[]'::json
+            ) AS verified_capabilities,
+
+            LOWER(
+              COALESCE(o.display_name, '') || ' ' ||
+              COALESCE(o.organization_type, '') || ' ' ||
+              COALESCE(string_agg(c.name, ' '), '')
+            ) AS search_text
+
+          FROM organizations o
+
+          LEFT JOIN organization_capabilities oc
+            ON oc.organization_id = o.id
+
+          LEFT JOIN capabilities c
+            ON c.id = oc.capability_id
+
+          GROUP BY
+            o.id,
+            o.location_id,
+            o.display_name,
+            o.organization_type,
+            o.verification_status,
+            o.website,
+            o.service_area,
+            o.status,
+            o.last_verified_at,
+            o.availability_or_constraints,
+            o.source_authority,
+            o.evidence_note,
+            o.current_capacity
+        )
+
+        SELECT
+          *,
+          (
+            SELECT COUNT(*)
+            FROM unnest($1::text[]) AS term
+            WHERE search_text LIKE '%' || term || '%'
+          ) AS match_count
+
+        FROM org_data
+
+        WHERE (
+          SELECT COUNT(*)
+          FROM unnest($1::text[]) AS term
+          WHERE search_text LIKE '%' || term || '%'
+        ) > 0
+
+        ORDER BY
+          match_count DESC,
+          display_name ASC
+        `,
+        [terms]
+      );
+
+      return result.rows;
+    });
+
+    return json({
+      query,
+      source: "PostgreSQL civic graph",
+      terms,
+      results: matches.map((row: any) => ({
+        organization: {
+          id: row.id,
+          location_id: row.location_id,
+          display_name: row.display_name,
+          organization_type: row.organization_type,
+          verification_status: row.verification_status,
+          website: row.website,
+          service_area: row.service_area,
+          status: row.status,
+          last_verified_at: row.last_verified_at,
+          availability_or_constraints:
+            row.availability_or_constraints,
+          source_authority: row.source_authority,
+          evidence_note: row.evidence_note,
+          verified_capabilities:
+            row.verified_capabilities,
+          current_capacity:
+            row.current_capacity
+        },
+        score: Number(row.match_count),
+        reason:
+          "Search terms matched the organization name, type, or verified capabilities stored in PostgreSQL."
+      }))
+    });
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        query,
+        error: error instanceof Error ? error.message : String(error)
+      },
+      500
+    );
+  }
+}
+
 export async function handleApi(
   request: Request,
   env: Env
@@ -285,22 +427,9 @@ export async function handleApi(
     return databaseSummary(env);
   }
 
-  /*
-    IMPORTANT:
-    /api/admin/import-seattle has been removed.
-
-    The initial Seattle import is complete.
-    Public anonymous clients should not have
-    a database-write endpoint.
-  */
-
   if (url.pathname === "/api/stats") {
     return json(pilotStats());
   }
-
-  /*
-    THESE ARE NOW POSTGRESQL-BACKED.
-  */
 
   if (url.pathname === "/api/organizations") {
     return databaseOrganizations(env);
@@ -315,10 +444,7 @@ export async function handleApi(
   }
 
   /*
-    MATCHING IS STILL USING THE BOUNDED
-    IN-MEMORY GRAPH FOR THIS STEP.
-
-    We will move matching to PostgreSQL next.
+    SEARCH NOW RUNS AGAINST POSTGRESQL.
   */
 
   if (url.pathname === "/api/matches") {
@@ -331,12 +457,13 @@ export async function handleApi(
       );
     }
 
-    return json({
-      query: q,
-      source: "bounded matcher",
-      results: findMatches(q)
-    });
+    return databaseMatches(env, q);
   }
+
+  /*
+    Relationship lookup is still using the bounded
+    relationship helper for one more step.
+  */
 
   if (url.pathname === "/api/relationship") {
     const a = url.searchParams.get("a");
