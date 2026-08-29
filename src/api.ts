@@ -19,57 +19,89 @@ function json(data: unknown, status = 200) {
   });
 }
 
-async function dbHealth(env: Env) {
+async function withDatabase<T>(
+  env: Env,
+  fn: (client: Client) => Promise<T>
+): Promise<T> {
   if (!env.HYPERDRIVE?.connectionString) {
-    return json(
-      {
-        ok: false,
-        database: "PostgreSQL",
-        hyperdrive: false,
-        error: "HYPERDRIVE binding is missing"
-      },
-      500
-    );
+    throw new Error("HYPERDRIVE binding is missing");
   }
 
   const client = new Client({
     connectionString: env.HYPERDRIVE.connectionString
   });
 
-  try {
-    await client.connect();
+  await client.connect();
 
-    const result = await client.query(`
-      SELECT
-        NOW() AS database_time,
-        current_database() AS database_name,
-        current_user AS database_user,
-        version() AS postgres_version
-    `);
+  try {
+    return await fn(client);
+  } finally {
+    await client.end();
+  }
+}
+
+async function dbHealth(env: Env) {
+  try {
+    const result = await withDatabase(env, async client => {
+      const query = await client.query(`
+        SELECT
+          NOW() AS database_time,
+          current_database() AS database_name,
+          current_user AS database_user,
+          version() AS postgres_version
+      `);
+
+      return query.rows[0];
+    });
 
     return json({
       ok: true,
       database: "PostgreSQL",
       hyperdrive: true,
       connection: "Cloudflare Hyperdrive -> Neon",
-      result: result.rows[0]
+      result
     });
   } catch (error) {
     return json(
       {
         ok: false,
         database: "PostgreSQL",
-        hyperdrive: true,
         error: error instanceof Error ? error.message : String(error)
       },
       500
     );
-  } finally {
-    try {
-      await client.end();
-    } catch {
-      // Ignore cleanup errors.
-    }
+  }
+}
+
+async function fixlineDatabase(env: Env) {
+  try {
+    const rows = await withDatabase(env, async client => {
+      const result = await client.query(`
+        SELECT
+          id,
+          value,
+          updated_at
+        FROM fixline_system
+        ORDER BY id
+      `);
+
+      return result.rows;
+    });
+
+    return json({
+      ok: true,
+      source: "persistent PostgreSQL",
+      connection: "Cloudflare Worker -> Hyperdrive -> Neon",
+      records: rows
+    });
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      },
+      500
+    );
   }
 }
 
@@ -90,6 +122,10 @@ export async function handleApi(
 
   if (url.pathname === "/api/db-health") {
     return dbHealth(env);
+  }
+
+  if (url.pathname === "/api/database") {
+    return fixlineDatabase(env);
   }
 
   if (url.pathname === "/api/stats") {
@@ -116,10 +152,7 @@ export async function handleApi(
     const q = url.searchParams.get("q")?.trim() ?? "";
 
     if (!q) {
-      return json(
-        { error: "QUERY_REQUIRED" },
-        400
-      );
+      return json({ error: "QUERY_REQUIRED" }, 400);
     }
 
     return json({
@@ -133,10 +166,7 @@ export async function handleApi(
     const b = url.searchParams.get("b");
 
     if (!a || !b) {
-      return json(
-        { error: "A_AND_B_REQUIRED" },
-        400
-      );
+      return json({ error: "A_AND_B_REQUIRED" }, 400);
     }
 
     return json({
@@ -144,8 +174,5 @@ export async function handleApi(
     });
   }
 
-  return json(
-    { error: "NOT_FOUND" },
-    404
-  );
+  return json({ error: "NOT_FOUND" }, 404);
 }
