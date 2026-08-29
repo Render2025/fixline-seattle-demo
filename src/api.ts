@@ -180,15 +180,11 @@ async function existingRelationship(
       r.evidence_note,
       r.source_url,
       r.verified_at
-
     FROM relationships r
-
     LEFT JOIN organizations oa
       ON oa.id = r.organization_a_id
-
     LEFT JOIN organizations ob
       ON ob.id = r.organization_b_id
-
     WHERE
       (
         r.organization_a_id = $1
@@ -199,7 +195,6 @@ async function existingRelationship(
         r.organization_a_id = $2
         AND r.organization_b_id = $1
       )
-
     LIMIT 1
     `,
     [a, b]
@@ -329,10 +324,7 @@ async function databaseProblem(
     );
 
     if (!problem) {
-      return json(
-        { error: "PROBLEM_NOT_FOUND" },
-        404
-      );
+      return json({ error: "PROBLEM_NOT_FOUND" }, 404);
     }
 
     return json({
@@ -355,87 +347,74 @@ async function problemCapabilities(
   problemNumber: number
 ) {
   try {
-    const result = await withDatabase(
-      env,
-      async client => {
-        const problem =
-          await getProblemByNumber(
-            client,
-            problemNumber
-          );
+    const result = await withDatabase(env, async client => {
+      const problem =
+        await getProblemByNumber(client, problemNumber);
 
-        if (!problem) {
-          return null;
-        }
+      if (!problem) return null;
 
-        const capabilities =
-          await client.query(
-            `
-            SELECT
-              c.id,
-              c.name,
-              c.category,
-              pc.relevance_type,
-              pc.evidence_note,
+      const capabilities = await client.query(
+        `
+        SELECT
+          c.id,
+          c.name,
+          c.category,
+          pc.relevance_type,
+          pc.evidence_note,
 
-              COALESCE(
-                json_agg(
-                  json_build_object(
-                    'id', o.id,
-                    'display_name', o.display_name,
-                    'organization_type', o.organization_type,
-                    'website', o.website,
-                    'current_capacity', o.current_capacity
-                  )
-                  ORDER BY o.display_name
-                ) FILTER (WHERE o.id IS NOT NULL),
-                '[]'::json
-              ) AS organizations
+          COALESCE(
+            json_agg(
+              json_build_object(
+                'id', o.id,
+                'display_name', o.display_name,
+                'organization_type', o.organization_type,
+                'website', o.website,
+                'current_capacity', o.current_capacity
+              )
+              ORDER BY o.display_name
+            ) FILTER (WHERE o.id IS NOT NULL),
+            '[]'::json
+          ) AS organizations
 
-            FROM problem_capabilities pc
+        FROM problem_capabilities pc
 
-            JOIN capabilities c
-              ON c.id = pc.capability_id
+        JOIN capabilities c
+          ON c.id = pc.capability_id
 
-            LEFT JOIN organization_capabilities oc
-              ON oc.capability_id = c.id
+        LEFT JOIN organization_capabilities oc
+          ON oc.capability_id = c.id
 
-            LEFT JOIN organizations o
-              ON o.id = oc.organization_id
+        LEFT JOIN organizations o
+          ON o.id = oc.organization_id
 
-            WHERE pc.problem_id = $1
+        WHERE pc.problem_id = $1
 
-            GROUP BY
-              c.id,
-              c.name,
-              c.category,
-              pc.relevance_type,
-              pc.evidence_note
+        GROUP BY
+          c.id,
+          c.name,
+          c.category,
+          pc.relevance_type,
+          pc.evidence_note
 
-            ORDER BY c.name
-            `,
-            [problem.id]
-          );
+        ORDER BY c.name
+        `,
+        [problem.id]
+      );
 
-        return {
-          problem,
-          capabilities: capabilities.rows
-        };
-      }
-    );
+      return {
+        problem,
+        capabilities: capabilities.rows
+      };
+    });
 
     if (!result) {
-      return json(
-        { error: "PROBLEM_NOT_FOUND" },
-        404
-      );
+      return json({ error: "PROBLEM_NOT_FOUND" }, 404);
     }
 
     return json({
       source: "PostgreSQL problem-capability graph",
       problem: result.problem,
-      capability_count:
-        result.capabilities.length,
+      capability_count: result.capabilities.length,
       capabilities: result.capabilities
     });
   } catch (error) {
@@ -449,102 +428,153 @@ async function problemCapabilities(
   }
 }
 
-async function suggestProblemCapabilities(
+async function problemIntelligence(
   env: Env,
   problemNumber: number
 ) {
   try {
-    const result = await withDatabase(
-      env,
-      async client => {
-        const problem =
-          await getProblemByNumber(
-            client,
-            problemNumber
-          );
+    const result = await withDatabase(env, async client => {
+      const problem =
+        await getProblemByNumber(client, problemNumber);
 
-        if (!problem) {
-          return null;
-        }
+      if (!problem) return null;
 
-        const problemTerms =
-          queryTerms(problem.name);
+      const capabilities = await client.query(
+        `
+        SELECT
+          c.id,
+          c.name,
+          c.category,
+          pc.relevance_type,
+          pc.evidence_note
+        FROM problem_capabilities pc
+        JOIN capabilities c
+          ON c.id = pc.capability_id
+        WHERE pc.problem_id = $1
+        ORDER BY c.name
+        `,
+        [problem.id]
+      );
 
-        const capabilities =
-          await client.query(
-            `
-            SELECT
-              c.id,
-              c.name,
-              c.category,
+      const organizations = await client.query(
+        `
+        SELECT
+          problem_id,
+          problem_number,
+          problem_name,
+          organization_id,
+          organization_name,
+          organization_type,
+          website,
+          verification_status,
+          current_capacity,
+          relevant_capabilities
+        FROM problem_relevant_organizations
+        WHERE problem_number = $1
+        ORDER BY organization_name
+        `,
+        [problemNumber]
+      );
 
-              (
-                SELECT COUNT(*)
-                FROM unnest($1::text[]) AS term
-                WHERE LOWER(
-                  COALESCE(c.name, '') || ' ' ||
-                  COALESCE(c.category, '')
-                )
-                LIKE '%' || term || '%'
-              ) AS lexical_score
+      const pairs = await client.query(
+        `
+        SELECT
+          organization_a_id,
+          organization_a_name,
+          organization_b_id,
+          organization_b_name,
+          relationship_id,
+          relationship_type,
+          relationship_status,
+          evidence_note,
+          source_url,
+          classification
+        FROM problem_collaboration_pairs
+        WHERE problem_number = $1
+        ORDER BY
+          classification,
+          organization_a_name,
+          organization_b_name
+        `,
+        [problemNumber]
+      );
 
-            FROM capabilities c
+      const knownRelationships =
+        pairs.rows.filter(
+          (row: any) =>
+            row.classification === "KNOWN_RELATIONSHIP"
+        );
 
-            WHERE (
-              SELECT COUNT(*)
-              FROM unnest($1::text[]) AS term
-              WHERE LOWER(
-                COALESCE(c.name, '') || ' ' ||
-                COALESCE(c.category, '')
-              )
-              LIKE '%' || term || '%'
-            ) > 0
+      const possibleGaps =
+        pairs.rows.filter(
+          (row: any) =>
+            row.classification === "POSSIBLE_COLLABORATION_GAP"
+        );
 
-            ORDER BY
-              lexical_score DESC,
-              c.name ASC
-            `,
-            [problemTerms]
-          );
-
-        return {
-          problem,
-          problemTerms,
-          suggestions:
-            capabilities.rows
-        };
-      }
-    );
+      return {
+        problem,
+        capabilities: capabilities.rows,
+        organizations: organizations.rows,
+        knownRelationships,
+        possibleGaps
+      };
+    });
 
     if (!result) {
-      return json(
-        { error: "PROBLEM_NOT_FOUND" },
-        404
-      );
+      return json({ error: "PROBLEM_NOT_FOUND" }, 404);
     }
 
     return json({
-      source:
-        "review-only lexical suggestion engine",
-      writes_database: false,
+      source: "PostgreSQL FixLine civic-intelligence graph",
+      engine: "FixLine Problem Intelligence v0.1",
+
       problem: result.problem,
-      terms: result.problemTerms,
-      suggestion_count:
-        result.suggestions.length,
-      suggestions:
-        result.suggestions.map(
-          (row: any) => ({
-            capability_id: row.id,
-            capability_name: row.name,
-            category: row.category,
-            lexical_score:
-              Number(row.lexical_score),
-            classification:
-              "REVIEW_REQUIRED",
-            note:
-              "This is only a lexical candidate. It has not been approved as relevant to the problem."
-          })
-        )
+
+      evidence_state: {
+        status: result.problem.status,
+        confidence: result.problem.confidence,
+        severity: result.problem.severity,
+        quantification_mode:
+          result.problem.quantification_mode,
+        evidence_summary:
+          result.problem.evidence_summary,
+        last_verified_at:
+          result.problem.last_verified_at,
+        recheck_at:
+          result.problem.recheck_at
+      },
+
+      approved_capabilities: {
+        count: result.capabilities.length,
+        items: result.capabilities
+      },
+
+      relevant_organizations: {
+        count: result.organizations.length,
+        items: result.organizations
+      },
+
+      collaboration_analysis: {
+        known_relationship_count:
+          result.knownRelationships.length,
+
+        possible_gap_count:
+          result.possibleGaps.length,
+
+        known_relationships:
+          result.knownRelationships,
+
+        possible_collaboration_gaps:
+          result.possibleGaps
+      },
+
+      safeguards: {
+        capability_does_not_mean_current_capacity: true,
+        missing_relationship_does_not_prove_novelty: true,
+        possible_collaboration_gap_is_a_review_hypothesis: true,
+        ai_output_is_not_authorization: true,
+        human_review_required_for_consequential_action: true
+      }
     });
   } catch (error) {
     return json(
@@ -628,69 +658,59 @@ async function databaseOrganization(
   id: string
 ) {
   try {
-    const organization = await withDatabase(
-      env,
-      async client => {
-        const result = await client.query(
-          `
-          SELECT
-            o.id,
-            o.location_id,
-            o.display_name,
-            o.organization_type,
-            o.verification_status,
-            o.website,
-            o.service_area,
-            o.status,
-            o.last_verified_at,
-            o.availability_or_constraints,
-            o.source_authority,
-            o.evidence_note,
-            o.current_capacity,
+    const organization = await withDatabase(env, async client => {
+      const result = await client.query(
+        `
+        SELECT
+          o.id,
+          o.location_id,
+          o.display_name,
+          o.organization_type,
+          o.verification_status,
+          o.website,
+          o.service_area,
+          o.status,
+          o.last_verified_at,
+          o.availability_or_constraints,
+          o.source_authority,
+          o.evidence_note,
+          o.current_capacity,
 
-            COALESCE(
-              json_agg(c.name ORDER BY c.name)
-              FILTER (WHERE c.id IS NOT NULL),
-              '[]'::json
-            ) AS verified_capabilities
+          COALESCE(
+            json_agg(c.name ORDER BY c.name)
+            FILTER (WHERE c.id IS NOT NULL),
+            '[]'::json
+          ) AS verified_capabilities
 
-          FROM organizations o
+        FROM organizations o
+        LEFT JOIN organization_capabilities oc
+          ON oc.organization_id = o.id
+        LEFT JOIN capabilities c
+          ON c.id = oc.capability_id
+        WHERE o.id = $1
+        GROUP BY
+          o.id,
+          o.location_id,
+          o.display_name,
+          o.organization_type,
+          o.verification_status,
+          o.website,
+          o.service_area,
+          o.status,
+          o.last_verified_at,
+          o.availability_or_constraints,
+          o.source_authority,
+          o.evidence_note,
+          o.current_capacity
+        `,
+        [id]
+      );
 
-          LEFT JOIN organization_capabilities oc
-            ON oc.organization_id = o.id
-
-          LEFT JOIN capabilities c
-            ON c.id = oc.capability_id
-
-          WHERE o.id = $1
-
-          GROUP BY
-            o.id,
-            o.location_id,
-            o.display_name,
-            o.organization_type,
-            o.verification_status,
-            o.website,
-            o.service_area,
-            o.status,
-            o.last_verified_at,
-            o.availability_or_constraints,
-            o.source_authority,
-            o.evidence_note,
-            o.current_capacity
-          `,
-          [id]
-        );
-
-        return result.rows[0] ?? null;
-      }
-    );
+      return result.rows[0] ?? null;
+    });
 
     if (!organization) {
-      return json(
-        { error: "ORGANIZATION_NOT_FOUND" },
-        404
-      );
+      return json({ error: "ORGANIZATION_NOT_FOUND" }, 404);
     }
 
     return json(organization);
@@ -714,37 +734,24 @@ async function databaseMatches(
 
     const matches = await withDatabase(
       env,
-      client =>
-        findOrganizationsForTerms(
-          client,
-          terms,
-          20
-        )
+      client => findOrganizationsForTerms(client, terms, 20)
     );
 
     return json({
       query,
-      source:
-        "PostgreSQL civic graph",
+      source: "PostgreSQL civic graph",
       terms,
-      results: matches.map(
-        (row: any) => ({
-          organization: {
-            id: row.id,
-            display_name:
-              row.display_name,
-            organization_type:
-              row.organization_type,
-            website: row.website,
-            verified_capabilities:
-              row.verified_capabilities,
-            current_capacity:
-              row.current_capacity
-          },
-          score:
-            Number(row.match_count)
-        })
-      )
+      results: matches.map((row: any) => ({
+        organization: {
+          id: row.id,
+          display_name: row.display_name,
+          organization_type: row.organization_type,
+          website: row.website,
+          verified_capabilities: row.verified_capabilities,
+          current_capacity: row.current_capacity
+        },
+        score: Number(row.match_count)
+      }))
     });
   } catch (error) {
     return json(
@@ -764,21 +771,14 @@ async function databaseRelationship(
   b: string
 ) {
   try {
-    const relationship =
-      await withDatabase(
-        env,
-        client =>
-          existingRelationship(
-            client,
-            a,
-            b
-          )
-      );
+    const relationship = await withDatabase(
+      env,
+      client => existingRelationship(client, a, b)
+    );
 
     if (!relationship) {
       return json({
-        source:
-          "PostgreSQL civic graph",
+        source: "PostgreSQL civic graph",
         relationship_found: false,
         relationship: null,
         interpretation:
@@ -787,8 +787,7 @@ async function databaseRelationship(
     }
 
     return json({
-      source:
-        "PostgreSQL civic graph",
+      source: "PostgreSQL civic graph",
       relationship_found: true,
       novelty_allowed: false,
       relationship
@@ -809,97 +808,61 @@ async function whoShouldTalk(
   query: string
 ) {
   try {
-    const terms =
-      queryTerms(query);
+    const terms = queryTerms(query);
 
-    const candidates =
-      await withDatabase(
-        env,
-        async client => {
-          const organizations =
-            await findOrganizationsForTerms(
-              client,
-              terms,
-              6
-            );
+    const candidates = await withDatabase(env, async client => {
+      const organizations =
+        await findOrganizationsForTerms(client, terms, 6);
 
-          const pairs: any[] = [];
+      const pairs: any[] = [];
 
-          for (
-            let i = 0;
-            i < organizations.length;
-            i++
-          ) {
-            for (
-              let j = i + 1;
-              j < organizations.length;
-              j++
-            ) {
-              const a =
-                organizations[i];
-              const b =
-                organizations[j];
+      for (let i = 0; i < organizations.length; i++) {
+        for (let j = i + 1; j < organizations.length; j++) {
+          const a = organizations[i];
+          const b = organizations[j];
 
-              const relationship =
-                await existingRelationship(
-                  client,
-                  a.id,
-                  b.id
-                );
+          const relationship =
+            await existingRelationship(client, a.id, b.id);
 
-              const scoreA =
-                Number(a.match_count);
-              const scoreB =
-                Number(b.match_count);
+          const scoreA = Number(a.match_count);
+          const scoreB = Number(b.match_count);
 
-              let classification =
-                "NEEDS_MORE_EVIDENCE";
+          let classification =
+            "NEEDS_MORE_EVIDENCE";
 
-              if (relationship) {
-                classification =
-                  "REDUNDANT_ALREADY_EXISTS";
-              } else if (
-                scoreA >= 2 &&
-                scoreB >= 2
-              ) {
-                classification =
-                  "NOVEL_CANDIDATE";
-              }
-
-              pairs.push({
-                classification,
-                organization_a: {
-                  id: a.id,
-                  name:
-                    a.display_name,
-                  relevance_score:
-                    scoreA
-                },
-                organization_b: {
-                  id: b.id,
-                  name:
-                    b.display_name,
-                  relevance_score:
-                    scoreB
-                },
-                existing_relationship:
-                  relationship,
-                human_review_required:
-                  true
-              });
-            }
+          if (relationship) {
+            classification =
+              "REDUNDANT_ALREADY_EXISTS";
+          } else if (scoreA >= 2 && scoreB >= 2) {
+            classification =
+              "NOVEL_CANDIDATE";
           }
 
-          return pairs;
+          pairs.push({
+            classification,
+            organization_a: {
+              id: a.id,
+              name: a.display_name,
+              relevance_score: scoreA
+            },
+            organization_b: {
+              id: b.id,
+              name: b.display_name,
+              relevance_score: scoreB
+            },
+            existing_relationship: relationship,
+            human_review_required: true
+          });
         }
-      );
+      }
+
+      return pairs;
+    });
 
     return json({
       query,
-      source:
-        "PostgreSQL civic graph",
-      engine:
-        "FixLine Who Should Talk v0.1",
+      source: "PostgreSQL civic graph",
+      engine: "FixLine Who Should Talk v0.1",
       candidates
     });
   } catch (error) {
@@ -907,10 +870,9 @@ async function whoShouldTalk(
       {
         ok: false,
         query,
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error)
+        error: error instanceof Error
+          ? error.message
+          : String(error)
       },
       500
     );
@@ -921,45 +883,43 @@ export async function handleApi(
   request: Request,
   env: Env
 ): Promise<Response> {
-  const url =
-    new URL(request.url);
+  const url = new URL(request.url);
 
   if (url.pathname === "/health") {
     return json({
       ok: true,
       service: "FixLine",
       mode: env.FIXLINE_MODE,
-      time:
-        new Date().toISOString()
+      time: new Date().toISOString()
     });
   }
 
-  if (
-    url.pathname ===
-    "/api/db-health"
-  ) {
+  if (url.pathname === "/api/db-health") {
     return dbHealth(env);
   }
 
-  if (
-    url.pathname ===
-    "/api/database"
-  ) {
+  if (url.pathname === "/api/database") {
     return databaseSummary(env);
   }
 
-  if (
-    url.pathname ===
-    "/api/stats"
-  ) {
+  if (url.pathname === "/api/stats") {
     return json(pilotStats());
   }
 
-  if (
-    url.pathname ===
-    "/api/problems"
-  ) {
+  if (url.pathname === "/api/problems") {
     return databaseProblems(env);
+  }
+
+  const intelligenceMatch =
+    url.pathname.match(
+      /^\/api\/problems\/(\d+)\/intelligence$/
+    );
+
+  if (intelligenceMatch) {
+    return problemIntelligence(
+      env,
+      Number(intelligenceMatch[1])
+    );
   }
 
   const capabilityMatch =
@@ -971,18 +931,6 @@ export async function handleApi(
     return problemCapabilities(
       env,
       Number(capabilityMatch[1])
-    );
-  }
-
-  const suggestionMatch =
-    url.pathname.match(
-      /^\/api\/problems\/(\d+)\/suggest-capabilities$/
-    );
-
-  if (suggestionMatch) {
-    return suggestProblemCapabilities(
-      env,
-      Number(suggestionMatch[1])
     );
   }
 
@@ -998,110 +946,53 @@ export async function handleApi(
     );
   }
 
-  if (
-    url.pathname ===
-    "/api/organizations"
-  ) {
+  if (url.pathname === "/api/organizations") {
     return databaseOrganizations(env);
   }
 
-  if (
-    url.pathname.startsWith(
-      "/api/organizations/"
-    )
-  ) {
-    const id =
-      decodeURIComponent(
-        url.pathname
-          .split("/")
-          .pop()!
-      );
-
-    return databaseOrganization(
-      env,
-      id
+  if (url.pathname.startsWith("/api/organizations/")) {
+    const id = decodeURIComponent(
+      url.pathname.split("/").pop()!
     );
+
+    return databaseOrganization(env, id);
   }
 
-  if (
-    url.pathname ===
-    "/api/matches"
-  ) {
+  if (url.pathname === "/api/matches") {
     const q =
-      url.searchParams
-        .get("q")
-        ?.trim() ?? "";
+      url.searchParams.get("q")?.trim() ?? "";
 
     if (!q) {
-      return json(
-        {
-          error:
-            "QUERY_REQUIRED"
-        },
-        400
-      );
+      return json({ error: "QUERY_REQUIRED" }, 400);
     }
 
-    return databaseMatches(
-      env,
-      q
-    );
+    return databaseMatches(env, q);
   }
 
-  if (
-    url.pathname ===
-    "/api/relationship"
-  ) {
-    const a =
-      url.searchParams.get("a");
-
-    const b =
-      url.searchParams.get("b");
+  if (url.pathname === "/api/relationship") {
+    const a = url.searchParams.get("a");
+    const b = url.searchParams.get("b");
 
     if (!a || !b) {
       return json(
-        {
-          error:
-            "A_AND_B_REQUIRED"
-        },
+        { error: "A_AND_B_REQUIRED" },
         400
       );
     }
 
-    return databaseRelationship(
-      env,
-      a,
-      b
-    );
+    return databaseRelationship(env, a, b);
   }
 
-  if (
-    url.pathname ===
-    "/api/who-should-talk"
-  ) {
+  if (url.pathname === "/api/who-should-talk") {
     const q =
-      url.searchParams
-        .get("q")
-        ?.trim() ?? "";
+      url.searchParams.get("q")?.trim() ?? "";
 
     if (!q) {
-      return json(
-        {
-          error:
-            "QUERY_REQUIRED"
-        },
-        400
-      );
+      return json({ error: "QUERY_REQUIRED" }, 400);
     }
 
-    return whoShouldTalk(
-      env,
-      q
-    );
+    return whoShouldTalk(env, q);
   }
 
-  return json(
-    { error: "NOT_FOUND" },
-    404
-  );
+  return json({ error: "NOT_FOUND" }, 404);
 }
