@@ -1,17 +1,9 @@
 import { Client } from "pg";
 import {
-  listOrganizations,
-  getOrganization,
   findMatches,
   knownRelationship,
   pilotStats
 } from "./core";
-import {
-  organizations,
-  capabilities,
-  organizationCapabilities,
-  relationships
-} from "./seed";
 import type { Env } from "./types";
 
 function json(data: unknown, status = 200) {
@@ -78,7 +70,7 @@ async function dbHealth(env: Env) {
   }
 }
 
-async function fixlineDatabase(env: Env) {
+async function databaseSummary(env: Env) {
   try {
     const result = await withDatabase(env, async client => {
       const system = await client.query(`
@@ -118,175 +110,147 @@ async function fixlineDatabase(env: Env) {
   }
 }
 
-async function importSeattle(env: Env) {
+async function databaseOrganizations(env: Env) {
   try {
-    const result = await withDatabase(env, async client => {
-      await client.query("BEGIN");
-
-      try {
-        for (const org of organizations) {
-          await client.query(
-            `
-            INSERT INTO organizations (
-              id,
-              location_id,
-              display_name,
-              organization_type,
-              verification_status,
-              website,
-              service_area,
-              status,
-              last_verified_at,
-              availability_or_constraints,
-              source_authority,
-              evidence_note,
-              current_capacity
-            )
-            VALUES (
-              $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'UNKNOWN'
-            )
-            ON CONFLICT (id) DO UPDATE SET
-              location_id = EXCLUDED.location_id,
-              display_name = EXCLUDED.display_name,
-              organization_type = EXCLUDED.organization_type,
-              verification_status = EXCLUDED.verification_status,
-              website = EXCLUDED.website,
-              service_area = EXCLUDED.service_area,
-              status = EXCLUDED.status,
-              last_verified_at = EXCLUDED.last_verified_at,
-              availability_or_constraints = EXCLUDED.availability_or_constraints,
-              source_authority = EXCLUDED.source_authority,
-              evidence_note = EXCLUDED.evidence_note,
-              updated_at = NOW()
-            `,
-            [
-              org.id,
-              org.location_id,
-              org.display_name,
-              org.organization_type,
-              org.verification_status,
-              org.website,
-              org.service_area_json?.text ?? null,
-              org.status,
-              org.last_verified_at,
-              org.availability_or_constraints ?? null,
-              org.source_authority ?? null,
-              org.evidence_note ?? null
-            ]
-          );
-        }
-
-        for (const cap of capabilities) {
-          await client.query(
-            `
-            INSERT INTO capabilities (
-              id,
-              name,
-              category
-            )
-            VALUES ($1,$2,$3)
-            ON CONFLICT (id) DO UPDATE SET
-              name = EXCLUDED.name,
-              category = EXCLUDED.category
-            `,
-            [
-              cap.id,
-              cap.name,
-              cap.capability_category ?? null
-            ]
-          );
-        }
-
-        for (const edge of organizationCapabilities) {
-          await client.query(
-            `
-            INSERT INTO organization_capabilities (
-              organization_id,
-              capability_id,
-              verification_status,
-              verified_at,
-              availability_status
-            )
-            VALUES ($1,$2,'verified',$3,$4)
-            ON CONFLICT (organization_id, capability_id)
-            DO UPDATE SET
-              verification_status = EXCLUDED.verification_status,
-              verified_at = EXCLUDED.verified_at,
-              availability_status = EXCLUDED.availability_status
-            `,
-            [
-              edge.organization_id,
-              edge.capability_id,
-              edge.verified_at ?? null,
-              edge.availability_status ?? "UNKNOWN"
-            ]
-          );
-        }
-
-        for (const rel of relationships) {
-          if (
-            rel.subject_a_type !== "Organization" ||
-            rel.subject_b_type !== "Organization"
-          ) {
-            continue;
-          }
-
-          await client.query(
-            `
-            INSERT INTO relationships (
-              id,
-              organization_a_id,
-              organization_b_id,
-              relationship_type,
-              status,
-              evidence_note,
-              source_url
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7)
-            ON CONFLICT (id) DO UPDATE SET
-              organization_a_id = EXCLUDED.organization_a_id,
-              organization_b_id = EXCLUDED.organization_b_id,
-              relationship_type = EXCLUDED.relationship_type,
-              status = EXCLUDED.status,
-              evidence_note = EXCLUDED.evidence_note,
-              source_url = EXCLUDED.source_url
-            `,
-            [
-              rel.id,
-              rel.subject_a_id,
-              rel.subject_b_id,
-              rel.relationship_type,
-              rel.status,
-              rel.note ?? null,
-              rel.source_url ?? null
-            ]
-          );
-        }
-
-        await client.query("COMMIT");
-      } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-      }
-
-      const counts = await client.query(`
+    const organizations = await withDatabase(env, async client => {
+      const result = await client.query(`
         SELECT
-          (SELECT COUNT(*) FROM organizations) AS organizations,
-          (SELECT COUNT(*) FROM capabilities) AS capabilities,
-          (SELECT COUNT(*) FROM organization_capabilities) AS capability_edges,
-          (SELECT COUNT(*) FROM relationships) AS relationships
+          o.id,
+          o.location_id,
+          o.display_name,
+          o.organization_type,
+          o.verification_status,
+          o.website,
+          o.service_area,
+          o.status,
+          o.last_verified_at,
+          o.availability_or_constraints,
+          o.source_authority,
+          o.evidence_note,
+          o.current_capacity,
+
+          COALESCE(
+            json_agg(
+              c.name
+              ORDER BY c.name
+            ) FILTER (WHERE c.id IS NOT NULL),
+            '[]'::json
+          ) AS verified_capabilities
+
+        FROM organizations o
+
+        LEFT JOIN organization_capabilities oc
+          ON oc.organization_id = o.id
+
+        LEFT JOIN capabilities c
+          ON c.id = oc.capability_id
+
+        GROUP BY
+          o.id,
+          o.location_id,
+          o.display_name,
+          o.organization_type,
+          o.verification_status,
+          o.website,
+          o.service_area,
+          o.status,
+          o.last_verified_at,
+          o.availability_or_constraints,
+          o.source_authority,
+          o.evidence_note,
+          o.current_capacity
+
+        ORDER BY o.display_name
       `);
 
-      return counts.rows[0];
+      return result.rows;
     });
 
-    return json({
-      ok: true,
-      import: "Seattle verified graph",
-      source: "bundled FixLine seed",
-      destination: "Neon PostgreSQL via Hyperdrive",
-      counts: result
-    });
+    return json(organizations);
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      },
+      500
+    );
+  }
+}
+
+async function databaseOrganization(
+  env: Env,
+  id: string
+) {
+  try {
+    const organization = await withDatabase(
+      env,
+      async client => {
+        const result = await client.query(
+          `
+          SELECT
+            o.id,
+            o.location_id,
+            o.display_name,
+            o.organization_type,
+            o.verification_status,
+            o.website,
+            o.service_area,
+            o.status,
+            o.last_verified_at,
+            o.availability_or_constraints,
+            o.source_authority,
+            o.evidence_note,
+            o.current_capacity,
+
+            COALESCE(
+              json_agg(
+                c.name
+                ORDER BY c.name
+              ) FILTER (WHERE c.id IS NOT NULL),
+              '[]'::json
+            ) AS verified_capabilities
+
+          FROM organizations o
+
+          LEFT JOIN organization_capabilities oc
+            ON oc.organization_id = o.id
+
+          LEFT JOIN capabilities c
+            ON c.id = oc.capability_id
+
+          WHERE o.id = $1
+
+          GROUP BY
+            o.id,
+            o.location_id,
+            o.display_name,
+            o.organization_type,
+            o.verification_status,
+            o.website,
+            o.service_area,
+            o.status,
+            o.last_verified_at,
+            o.availability_or_constraints,
+            o.source_authority,
+            o.evidence_note,
+            o.current_capacity
+          `,
+          [id]
+        );
+
+        return result.rows[0] ?? null;
+      }
+    );
+
+    if (!organization) {
+      return json(
+        { error: "ORGANIZATION_NOT_FOUND" },
+        404
+      );
+    }
+
+    return json(organization);
   } catch (error) {
     return json(
       {
@@ -318,19 +282,28 @@ export async function handleApi(
   }
 
   if (url.pathname === "/api/database") {
-    return fixlineDatabase(env);
+    return databaseSummary(env);
   }
 
-  if (url.pathname === "/api/admin/import-seattle") {
-    return importSeattle(env);
-  }
+  /*
+    IMPORTANT:
+    /api/admin/import-seattle has been removed.
+
+    The initial Seattle import is complete.
+    Public anonymous clients should not have
+    a database-write endpoint.
+  */
 
   if (url.pathname === "/api/stats") {
     return json(pilotStats());
   }
 
+  /*
+    THESE ARE NOW POSTGRESQL-BACKED.
+  */
+
   if (url.pathname === "/api/organizations") {
-    return json(listOrganizations());
+    return databaseOrganizations(env);
   }
 
   if (url.pathname.startsWith("/api/organizations/")) {
@@ -338,22 +311,29 @@ export async function handleApi(
       url.pathname.split("/").pop()!
     );
 
-    const org = getOrganization(id);
-
-    return org
-      ? json(org)
-      : json({ error: "NOT_FOUND" }, 404);
+    return databaseOrganization(env, id);
   }
+
+  /*
+    MATCHING IS STILL USING THE BOUNDED
+    IN-MEMORY GRAPH FOR THIS STEP.
+
+    We will move matching to PostgreSQL next.
+  */
 
   if (url.pathname === "/api/matches") {
     const q = url.searchParams.get("q")?.trim() ?? "";
 
     if (!q) {
-      return json({ error: "QUERY_REQUIRED" }, 400);
+      return json(
+        { error: "QUERY_REQUIRED" },
+        400
+      );
     }
 
     return json({
       query: q,
+      source: "bounded matcher",
       results: findMatches(q)
     });
   }
@@ -363,7 +343,10 @@ export async function handleApi(
     const b = url.searchParams.get("b");
 
     if (!a || !b) {
-      return json({ error: "A_AND_B_REQUIRED" }, 400);
+      return json(
+        { error: "A_AND_B_REQUIRED" },
+        400
+      );
     }
 
     return json({
@@ -371,5 +354,8 @@ export async function handleApi(
     });
   }
 
-  return json({ error: "NOT_FOUND" }, 404);
+  return json(
+    { error: "NOT_FOUND" },
+    404
+  );
 }
