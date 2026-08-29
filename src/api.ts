@@ -1,21 +1,31 @@
 import { pilotStats } from "./core";
 import { withDatabase } from "./db";
+
 import {
   getProblemByNumber,
   listProblems,
   getProblemCapabilities,
   getProblemIntelligence
 } from "./problem-intelligence";
+
 import {
   listProjects,
   getProject,
   listFundingGaps
 } from "./projects";
+
 import {
   listOutcomes,
   getOutcome,
   listRechecks
 } from "./outcomes";
+
+import {
+  listLedger,
+  getLedgerRecord,
+  listOpenUnfinishedWork
+} from "./ledger";
+
 import type { Env } from "./types";
 
 function json(data: unknown, status = 200) {
@@ -201,7 +211,10 @@ async function dbHealth(env: Env) {
     return json(
       {
         ok: false,
-        error: error instanceof Error ? error.message : String(error)
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error)
       },
       500
     );
@@ -240,7 +253,10 @@ async function databaseSummary(env: Env) {
     return json(
       {
         ok: false,
-        error: error instanceof Error ? error.message : String(error)
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error)
       },
       500
     );
@@ -306,7 +322,10 @@ async function databaseOrganizations(env: Env) {
     return json(
       {
         ok: false,
-        error: error instanceof Error ? error.message : String(error)
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error)
       },
       500
     );
@@ -374,7 +393,10 @@ async function databaseOrganization(
     });
 
     if (!organization) {
-      return json({ error: "ORGANIZATION_NOT_FOUND" }, 404);
+      return json(
+        { error: "ORGANIZATION_NOT_FOUND" },
+        404
+      );
     }
 
     return json(organization);
@@ -382,7 +404,10 @@ async function databaseOrganization(
     return json(
       {
         ok: false,
-        error: error instanceof Error ? error.message : String(error)
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error)
       },
       500
     );
@@ -411,7 +436,8 @@ async function databaseMatches(
         organization: {
           id: row.id,
           display_name: row.display_name,
-          organization_type: row.organization_type,
+          organization_type:
+            row.organization_type,
           website: row.website,
           verified_capabilities:
             row.verified_capabilities,
@@ -452,8 +478,16 @@ async function whoShouldTalk(
 
     const pairs: any[] = [];
 
-    for (let i = 0; i < organizations.length; i++) {
-      for (let j = i + 1; j < organizations.length; j++) {
+    for (
+      let i = 0;
+      i < organizations.length;
+      i++
+    ) {
+      for (
+        let j = i + 1;
+        j < organizations.length;
+        j++
+      ) {
         const a = organizations[i];
         const b = organizations[j];
 
@@ -464,8 +498,11 @@ async function whoShouldTalk(
             b.id
           );
 
-        const scoreA = Number(a.match_count);
-        const scoreB = Number(b.match_count);
+        const scoreA =
+          Number(a.match_count);
+
+        const scoreB =
+          Number(b.match_count);
 
         let classification =
           "NEEDS_MORE_EVIDENCE";
@@ -483,18 +520,22 @@ async function whoShouldTalk(
 
         pairs.push({
           classification,
+
           organization_a: {
             id: a.id,
             name: a.display_name,
             relevance_score: scoreA
           },
+
           organization_b: {
             id: b.id,
             name: b.display_name,
             relevance_score: scoreB
           },
+
           existing_relationship:
             relationship,
+
           human_review_required: true
         });
       }
@@ -503,7 +544,8 @@ async function whoShouldTalk(
     return json({
       query,
       source: "PostgreSQL civic graph",
-      engine: "FixLine Who Should Talk v0.1",
+      engine:
+        "FixLine Who Should Talk v0.1",
       candidates: pairs
     });
   } catch (error) {
@@ -532,28 +574,47 @@ export async function handleApi(
       ok: true,
       service: "FixLine",
       mode: env.FIXLINE_MODE,
-      time: new Date().toISOString()
+      time:
+        new Date().toISOString()
     });
   }
 
-  if (url.pathname === "/api/db-health") {
+  if (
+    url.pathname ===
+    "/api/db-health"
+  ) {
     return dbHealth(env);
   }
 
-  if (url.pathname === "/api/database") {
+  if (
+    url.pathname ===
+    "/api/database"
+  ) {
     return databaseSummary(env);
   }
 
-  if (url.pathname === "/api/stats") {
+  if (
+    url.pathname ===
+    "/api/stats"
+  ) {
     return json(pilotStats());
   }
 
-  if (url.pathname === "/api/problems") {
+  /*
+    PROBLEMS
+  */
+
+  if (
+    url.pathname ===
+    "/api/problems"
+  ) {
     try {
-      const problems = await listProblems(env);
+      const problems =
+        await listProblems(env);
 
       return json({
-        source: "PostgreSQL unfinished-work registry",
+        source:
+          "PostgreSQL unfinished-work registry",
         count: problems.length,
         problems
       });
@@ -586,7 +647,10 @@ export async function handleApi(
 
       if (!result) {
         return json(
-          { error: "PROBLEM_NOT_FOUND" },
+          {
+            error:
+              "PROBLEM_NOT_FOUND"
+          },
           404
         );
       }
@@ -627,7 +691,10 @@ export async function handleApi(
 
       if (!result) {
         return json(
-          { error: "PROBLEM_NOT_FOUND" },
+          {
+            error:
+              "PROBLEM_NOT_FOUND"
+          },
           404
         );
       }
@@ -635,7 +702,8 @@ export async function handleApi(
       return json({
         source:
           "PostgreSQL problem-capability graph",
-        problem: result.problem,
+        problem:
+          result.problem,
         capability_count:
           result.capabilities.length,
         capabilities:
@@ -670,7 +738,10 @@ export async function handleApi(
 
       if (!problem) {
         return json(
-          { error: "PROBLEM_NOT_FOUND" },
+          {
+            error:
+              "PROBLEM_NOT_FOUND"
+          },
           404
         );
       }
@@ -694,13 +765,23 @@ export async function handleApi(
     }
   }
 
-  if (url.pathname === "/api/projects") {
+  /*
+    PROJECTS + FUNDING
+  */
+
+  if (
+    url.pathname ===
+    "/api/projects"
+  ) {
     try {
-      const projects = await listProjects(env);
+      const projects =
+        await listProjects(env);
 
       return json({
-        source: "PostgreSQL project registry",
-        count: projects.length,
+        source:
+          "PostgreSQL project registry",
+        count:
+          projects.length,
         projects
       });
     } catch (error) {
@@ -717,14 +798,21 @@ export async function handleApi(
     }
   }
 
-  if (url.pathname === "/api/funding-gaps") {
+  if (
+    url.pathname ===
+    "/api/funding-gaps"
+  ) {
     try {
-      const gaps = await listFundingGaps(env);
+      const gaps =
+        await listFundingGaps(env);
 
       return json({
-        source: "PostgreSQL funding-gap registry",
-        count: gaps.length,
-        funding_gaps: gaps
+        source:
+          "PostgreSQL funding-gap registry",
+        count:
+          gaps.length,
+        funding_gaps:
+          gaps
       });
     } catch (error) {
       return json(
@@ -748,7 +836,9 @@ export async function handleApi(
   if (projectMatch) {
     try {
       const projectId =
-        decodeURIComponent(projectMatch[1]);
+        decodeURIComponent(
+          projectMatch[1]
+        );
 
       const project =
         await getProject(
@@ -758,7 +848,10 @@ export async function handleApi(
 
       if (!project) {
         return json(
-          { error: "PROJECT_NOT_FOUND" },
+          {
+            error:
+              "PROJECT_NOT_FOUND"
+          },
           404
         );
       }
@@ -782,14 +875,23 @@ export async function handleApi(
     }
   }
 
-  if (url.pathname === "/api/outcomes") {
+  /*
+    OUTCOMES + VERIFICATION + RECHECK
+  */
+
+  if (
+    url.pathname ===
+    "/api/outcomes"
+  ) {
     try {
-      const outcomes = await listOutcomes(env);
+      const outcomes =
+        await listOutcomes(env);
 
       return json({
         source:
           "PostgreSQL outcome registry",
-        count: outcomes.length,
+        count:
+          outcomes.length,
         outcomes
       });
     } catch (error) {
@@ -826,7 +928,10 @@ export async function handleApi(
 
       if (!outcome) {
         return json(
-          { error: "OUTCOME_NOT_FOUND" },
+          {
+            error:
+              "OUTCOME_NOT_FOUND"
+          },
           404
         );
       }
@@ -850,7 +955,10 @@ export async function handleApi(
     }
   }
 
-  if (url.pathname === "/api/rechecks") {
+  if (
+    url.pathname ===
+    "/api/rechecks"
+  ) {
     try {
       const rechecks =
         await listRechecks(env);
@@ -858,7 +966,8 @@ export async function handleApi(
       return json({
         source:
           "PostgreSQL recheck registry",
-        count: rechecks.length,
+        count:
+          rechecks.length,
         rechecks
       });
     } catch (error) {
@@ -875,63 +984,24 @@ export async function handleApi(
     }
   }
 
-  if (url.pathname === "/api/organizations") {
-    return databaseOrganizations(env);
-  }
+  /*
+    UNFINISHED-WORK LEDGER
+  */
 
   if (
-    url.pathname.startsWith(
-      "/api/organizations/"
-    )
+    url.pathname ===
+    "/api/ledger"
   ) {
-    const id = decodeURIComponent(
-      url.pathname.split("/").pop()!
-    );
-
-    return databaseOrganization(env, id);
-  }
-
-  if (url.pathname === "/api/matches") {
-    const q =
-      url.searchParams.get("q")?.trim() ?? "";
-
-    if (!q) {
-      return json(
-        { error: "QUERY_REQUIRED" },
-        400
-      );
-    }
-
-    return databaseMatches(env, q);
-  }
-
-  if (url.pathname === "/api/relationship") {
-    const a = url.searchParams.get("a");
-    const b = url.searchParams.get("b");
-
-    if (!a || !b) {
-      return json(
-        { error: "A_AND_B_REQUIRED" },
-        400
-      );
-    }
-
     try {
-      const relationship =
-        await existingRelationship(
-          env,
-          a,
-          b
-        );
+      const records =
+        await listLedger(env);
 
       return json({
-        source: "PostgreSQL civic graph",
-        relationship_found:
-          Boolean(relationship),
-        relationship,
-        interpretation: relationship
-          ? "FixLine contains a relationship record for this pair."
-          : "No relationship is recorded in the bounded FixLine graph. This does not prove that no real-world relationship exists."
+        source:
+          "PostgreSQL unfinished-work ledger",
+        count:
+          records.length,
+        records
       });
     } catch (error) {
       return json(
@@ -949,23 +1019,247 @@ export async function handleApi(
 
   if (
     url.pathname ===
-    "/api/who-should-talk"
+    "/api/unfinished-work"
+  ) {
+    try {
+      const records =
+        await listOpenUnfinishedWork(
+          env
+        );
+
+      return json({
+        source:
+          "PostgreSQL unfinished-work ledger",
+        definition:
+          "Records not currently classified as CLOSED, SUSTAINED, or RESOLVED.",
+        count:
+          records.length,
+        unfinished_work:
+          records,
+        safeguards: {
+          open_record_does_not_prove_program_failure:
+            true,
+          absence_of_record_does_not_prove_problem_solved:
+            true,
+          durable_resolution_requires_verification_and_recheck:
+            true
+        }
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  const ledgerMatch =
+    url.pathname.match(
+      /^\/api\/ledger\/(.+)$/
+    );
+
+  if (ledgerMatch) {
+    try {
+      const ledgerId =
+        decodeURIComponent(
+          ledgerMatch[1]
+        );
+
+      const record =
+        await getLedgerRecord(
+          env,
+          ledgerId
+        );
+
+      if (!record) {
+        return json(
+          {
+            error:
+              "LEDGER_RECORD_NOT_FOUND"
+          },
+          404
+        );
+      }
+
+      return json({
+        source:
+          "PostgreSQL unfinished-work ledger",
+        record
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  /*
+    ORGANIZATIONS
+  */
+
+  if (
+    url.pathname ===
+    "/api/organizations"
+  ) {
+    return databaseOrganizations(
+      env
+    );
+  }
+
+  if (
+    url.pathname.startsWith(
+      "/api/organizations/"
+    )
+  ) {
+    const id =
+      decodeURIComponent(
+        url.pathname
+          .split("/")
+          .pop()!
+      );
+
+    return databaseOrganization(
+      env,
+      id
+    );
+  }
+
+  /*
+    SEARCH
+  */
+
+  if (
+    url.pathname ===
+    "/api/matches"
   ) {
     const q =
-      url.searchParams.get("q")?.trim() ?? "";
+      url.searchParams
+        .get("q")
+        ?.trim() ?? "";
 
     if (!q) {
       return json(
-        { error: "QUERY_REQUIRED" },
+        {
+          error:
+            "QUERY_REQUIRED"
+        },
         400
       );
     }
 
-    return whoShouldTalk(env, q);
+    return databaseMatches(
+      env,
+      q
+    );
+  }
+
+  /*
+    RELATIONSHIP CHECK
+  */
+
+  if (
+    url.pathname ===
+    "/api/relationship"
+  ) {
+    const a =
+      url.searchParams.get("a");
+
+    const b =
+      url.searchParams.get("b");
+
+    if (!a || !b) {
+      return json(
+        {
+          error:
+            "A_AND_B_REQUIRED"
+        },
+        400
+      );
+    }
+
+    try {
+      const relationship =
+        await existingRelationship(
+          env,
+          a,
+          b
+        );
+
+      return json({
+        source:
+          "PostgreSQL civic graph",
+
+        relationship_found:
+          Boolean(relationship),
+
+        relationship,
+
+        interpretation:
+          relationship
+            ? "FixLine contains a relationship record for this pair."
+            : "No relationship is recorded in the bounded FixLine graph. This does not prove that no real-world relationship exists."
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  /*
+    WHO SHOULD TALK
+  */
+
+  if (
+    url.pathname ===
+    "/api/who-should-talk"
+  ) {
+    const q =
+      url.searchParams
+        .get("q")
+        ?.trim() ?? "";
+
+    if (!q) {
+      return json(
+        {
+          error:
+            "QUERY_REQUIRED"
+        },
+        400
+      );
+    }
+
+    return whoShouldTalk(
+      env,
+      q
+    );
   }
 
   return json(
-    { error: "NOT_FOUND" },
+    {
+      error:
+        "NOT_FOUND"
+    },
     404
   );
 }
