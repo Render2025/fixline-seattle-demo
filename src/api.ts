@@ -6,6 +6,11 @@ import {
   getProblemCapabilities,
   getProblemIntelligence
 } from "./problem-intelligence";
+import {
+  listProjects,
+  getProject,
+  listFundingGaps
+} from "./projects";
 import type { Env } from "./types";
 
 function json(data: unknown, status = 200) {
@@ -210,6 +215,7 @@ async function databaseSummary(env: Env) {
           (SELECT COUNT(*) FROM problems) AS problems,
           (SELECT COUNT(*) FROM problem_capabilities) AS problem_capability_edges,
           (SELECT COUNT(*) FROM projects) AS projects,
+          (SELECT COUNT(*) FROM funding_commitments) AS funding_commitments,
           (SELECT COUNT(*) FROM outcomes) AS outcomes,
           (SELECT COUNT(*) FROM ledger_records) AS ledger_records
       `);
@@ -413,9 +419,10 @@ async function databaseMatches(
       {
         ok: false,
         query,
-        error: error instanceof Error
-          ? error.message
-          : String(error)
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error)
       },
       500
     );
@@ -497,9 +504,10 @@ async function whoShouldTalk(
       {
         ok: false,
         query,
-        error: error instanceof Error
-          ? error.message
-          : String(error)
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error)
       },
       500
     );
@@ -538,8 +546,7 @@ export async function handleApi(
       const problems = await listProblems(env);
 
       return json({
-        source:
-          "PostgreSQL unfinished-work registry",
+        source: "PostgreSQL unfinished-work registry",
         count: problems.length,
         problems
       });
@@ -665,6 +672,94 @@ export async function handleApi(
         source:
           "PostgreSQL unfinished-work registry",
         problem
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  if (url.pathname === "/api/projects") {
+    try {
+      const projects = await listProjects(env);
+
+      return json({
+        source: "PostgreSQL project registry",
+        count: projects.length,
+        projects
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  if (url.pathname === "/api/funding-gaps") {
+    try {
+      const gaps = await listFundingGaps(env);
+
+      return json({
+        source: "PostgreSQL funding-gap registry",
+        count: gaps.length,
+        funding_gaps: gaps
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  const projectMatch =
+    url.pathname.match(
+      /^\/api\/projects\/(.+)$/
+    );
+
+  if (projectMatch) {
+    try {
+      const projectId =
+        decodeURIComponent(projectMatch[1]);
+
+      const project =
+        await getProject(
+          env,
+          projectId
+        );
+
+      if (!project) {
+        return json(
+          { error: "PROJECT_NOT_FOUND" },
+          404
+        );
+      }
+
+      return json({
+        source:
+          "PostgreSQL project intelligence",
+        ...project
       });
     } catch (error) {
       return json(
