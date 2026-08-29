@@ -68,10 +68,8 @@ async function findOrganizationsForTerms(
         o.current_capacity,
 
         COALESCE(
-          json_agg(
-            c.name
-            ORDER BY c.name
-          ) FILTER (WHERE c.id IS NOT NULL),
+          json_agg(c.name ORDER BY c.name)
+          FILTER (WHERE c.id IS NOT NULL),
           '[]'::json
         ) AS verified_capabilities,
 
@@ -214,31 +212,26 @@ async function dbHealth(env: Env) {
 async function databaseSummary(env: Env) {
   try {
     const result = await withDatabase(env, async client => {
-      const system = await client.query(`
-        SELECT id, value, updated_at
-        FROM fixline_system
-        ORDER BY id
-      `);
-
       const counts = await client.query(`
         SELECT
           (SELECT COUNT(*) FROM organizations) AS organizations,
           (SELECT COUNT(*) FROM capabilities) AS capabilities,
           (SELECT COUNT(*) FROM organization_capabilities) AS capability_edges,
-          (SELECT COUNT(*) FROM relationships) AS relationships
+          (SELECT COUNT(*) FROM relationships) AS relationships,
+          (SELECT COUNT(*) FROM problems) AS problems,
+          (SELECT COUNT(*) FROM projects) AS projects,
+          (SELECT COUNT(*) FROM outcomes) AS outcomes,
+          (SELECT COUNT(*) FROM ledger_records) AS ledger_records
       `);
 
-      return {
-        system: system.rows,
-        counts: counts.rows[0]
-      };
+      return counts.rows[0];
     });
 
     return json({
       ok: true,
       source: "persistent PostgreSQL",
       connection: "Cloudflare Worker -> Hyperdrive -> Neon",
-      ...result
+      counts: result
     });
   } catch (error) {
     return json(
@@ -271,10 +264,8 @@ async function databaseOrganizations(env: Env) {
           o.current_capacity,
 
           COALESCE(
-            json_agg(
-              c.name
-              ORDER BY c.name
-            ) FILTER (WHERE c.id IS NOT NULL),
+            json_agg(c.name ORDER BY c.name)
+            FILTER (WHERE c.id IS NOT NULL),
             '[]'::json
           ) AS verified_capabilities
 
@@ -345,10 +336,8 @@ async function databaseOrganization(
             o.current_capacity,
 
             COALESCE(
-              json_agg(
-                c.name
-                ORDER BY c.name
-              ) FILTER (WHERE c.id IS NOT NULL),
+              json_agg(c.name ORDER BY c.name)
+              FILTER (WHERE c.id IS NOT NULL),
               '[]'::json
             ) AS verified_capabilities
 
@@ -403,6 +392,103 @@ async function databaseOrganization(
   }
 }
 
+async function databaseProblems(env: Env) {
+  try {
+    const problems = await withDatabase(env, async client => {
+      const result = await client.query(`
+        SELECT
+          id,
+          location_id,
+          problem_number,
+          name,
+          description,
+          status,
+          severity,
+          quantification_mode,
+          evidence_summary,
+          confidence,
+          last_verified_at,
+          recheck_at,
+          created_at,
+          updated_at
+        FROM problems
+        ORDER BY problem_number
+      `);
+
+      return result.rows;
+    });
+
+    return json({
+      source: "PostgreSQL unfinished-work registry",
+      count: problems.length,
+      problems
+    });
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      },
+      500
+    );
+  }
+}
+
+async function databaseProblem(
+  env: Env,
+  problemNumber: number
+) {
+  try {
+    const problem = await withDatabase(env, async client => {
+      const result = await client.query(
+        `
+        SELECT
+          id,
+          location_id,
+          problem_number,
+          name,
+          description,
+          status,
+          severity,
+          quantification_mode,
+          evidence_summary,
+          confidence,
+          last_verified_at,
+          recheck_at,
+          created_at,
+          updated_at
+        FROM problems
+        WHERE problem_number = $1
+        LIMIT 1
+        `,
+        [problemNumber]
+      );
+
+      return result.rows[0] ?? null;
+    });
+
+    if (!problem) {
+      return json(
+        { error: "PROBLEM_NOT_FOUND" },
+        404
+      );
+    }
+
+    return json({
+      source: "PostgreSQL unfinished-work registry",
+      problem
+    });
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      },
+      500
+    );
+  }
+}
+
 async function databaseMatches(
   env: Env,
   query: string
@@ -422,26 +508,13 @@ async function databaseMatches(
       results: matches.map((row: any) => ({
         organization: {
           id: row.id,
-          location_id: row.location_id,
           display_name: row.display_name,
           organization_type: row.organization_type,
-          verification_status: row.verification_status,
           website: row.website,
-          service_area: row.service_area,
-          status: row.status,
-          last_verified_at: row.last_verified_at,
-          availability_or_constraints:
-            row.availability_or_constraints,
-          source_authority: row.source_authority,
-          evidence_note: row.evidence_note,
-          verified_capabilities:
-            row.verified_capabilities,
-          current_capacity:
-            row.current_capacity
+          verified_capabilities: row.verified_capabilities,
+          current_capacity: row.current_capacity
         },
-        score: Number(row.match_count),
-        reason:
-          "Search terms matched the organization name, type, or verified capabilities stored in PostgreSQL."
+        score: Number(row.match_count)
       }))
     });
   } catch (error) {
@@ -481,9 +554,7 @@ async function databaseRelationship(
       source: "PostgreSQL civic graph",
       relationship_found: true,
       novelty_allowed: false,
-      relationship,
-      interpretation:
-        "FixLine found an existing relationship record. Do not present this pair as a novel introduction."
+      relationship
     });
   } catch (error) {
     return json(
@@ -503,23 +574,9 @@ async function whoShouldTalk(
   try {
     const terms = queryTerms(query);
 
-    if (!terms.length) {
-      return json({
-        query,
-        source: "PostgreSQL civic graph",
-        candidates: []
-      });
-    }
-
     const candidates = await withDatabase(
       env,
       async client => {
-        /*
-          Keep the first demonstration intentionally bounded.
-
-          We retrieve the six strongest matching organizations,
-          then evaluate every unique pair.
-        */
         const organizations =
           await findOrganizationsForTerms(
             client,
@@ -530,11 +587,7 @@ async function whoShouldTalk(
         const pairs: any[] = [];
 
         for (let i = 0; i < organizations.length; i++) {
-          for (
-            let j = i + 1;
-            j < organizations.length;
-            j++
-          ) {
+          for (let j = i + 1; j < organizations.length; j++) {
             const a = organizations[i];
             const b = organizations[j];
 
@@ -548,135 +601,43 @@ async function whoShouldTalk(
             const scoreA = Number(a.match_count);
             const scoreB = Number(b.match_count);
 
-            let classification:
-              | "REDUNDANT_ALREADY_EXISTS"
-              | "NOVEL_CANDIDATE"
-              | "NEEDS_MORE_EVIDENCE";
-
-            let explanation: string;
+            let classification =
+              "NEEDS_MORE_EVIDENCE";
 
             if (relationship) {
               classification =
                 "REDUNDANT_ALREADY_EXISTS";
-
-              explanation =
-                "FixLine already contains evidence of a relationship between these organizations. Do not present this as a novel introduction.";
-            } else if (
-              scoreA >= 2 &&
-              scoreB >= 2
-            ) {
+            } else if (scoreA >= 2 && scoreB >= 2) {
               classification =
                 "NOVEL_CANDIDATE";
-
-              explanation =
-                "Both organizations strongly match the civic need and FixLine currently has no relationship record between them. Novelty is not yet independently verified.";
-            } else {
-              classification =
-                "NEEDS_MORE_EVIDENCE";
-
-              explanation =
-                "Both organizations have some relevance, but the current evidence is not strong enough to recommend an introduction without additional review.";
             }
 
             pairs.push({
               classification,
-
               organization_a: {
                 id: a.id,
                 name: a.display_name,
-                relevance_score: scoreA,
-                current_capacity:
-                  a.current_capacity,
-                capabilities:
-                  a.verified_capabilities
+                relevance_score: scoreA
               },
-
               organization_b: {
                 id: b.id,
                 name: b.display_name,
-                relevance_score: scoreB,
-                current_capacity:
-                  b.current_capacity,
-                capabilities:
-                  b.verified_capabilities
+                relevance_score: scoreB
               },
-
-              existing_relationship:
-                relationship,
-
-              explanation,
-
-              safety_and_uncertainty: {
-                capability_is_not_capacity: true,
-                absence_of_relationship_record_does_not_prove_novelty:
-                  true,
-                human_review_required: true
-              }
+              existing_relationship: relationship,
+              human_review_required: true
             });
           }
         }
-
-        const rank = {
-          NOVEL_CANDIDATE: 1,
-          NEEDS_MORE_EVIDENCE: 2,
-          REDUNDANT_ALREADY_EXISTS: 3
-        };
-
-        pairs.sort((x, y) => {
-          const classDifference =
-            rank[x.classification] -
-            rank[y.classification];
-
-          if (classDifference !== 0) {
-            return classDifference;
-          }
-
-          const xScore =
-            x.organization_a.relevance_score +
-            x.organization_b.relevance_score;
-
-          const yScore =
-            y.organization_a.relevance_score +
-            y.organization_b.relevance_score;
-
-          return yScore - xScore;
-        });
 
         return pairs;
       }
     );
 
-    const summary = {
-      novel_candidates:
-        candidates.filter(
-          x =>
-            x.classification ===
-            "NOVEL_CANDIDATE"
-        ).length,
-
-      needs_more_evidence:
-        candidates.filter(
-          x =>
-            x.classification ===
-            "NEEDS_MORE_EVIDENCE"
-        ).length,
-
-      redundant_existing:
-        candidates.filter(
-          x =>
-            x.classification ===
-            "REDUNDANT_ALREADY_EXISTS"
-        ).length
-    };
-
     return json({
       query,
       source: "PostgreSQL civic graph",
-      engine:
-        "FixLine Who Should Talk v0.1",
-      interpretation:
-        "These are advisory civic-intelligence hypotheses, not instructions or confirmed partnerships.",
-      summary,
+      engine: "FixLine Who Should Talk v0.1",
       candidates
     });
   } catch (error) {
@@ -684,10 +645,7 @@ async function whoShouldTalk(
       {
         ok: false,
         query,
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error)
+        error: error instanceof Error ? error.message : String(error)
       },
       500
     );
@@ -721,15 +679,29 @@ export async function handleApi(
     return json(pilotStats());
   }
 
+  if (url.pathname === "/api/problems") {
+    return databaseProblems(env);
+  }
+
+  if (url.pathname.startsWith("/api/problems/")) {
+    const raw = url.pathname.split("/").pop()!;
+    const problemNumber = Number(raw);
+
+    if (!Number.isInteger(problemNumber)) {
+      return json(
+        { error: "INVALID_PROBLEM_NUMBER" },
+        400
+      );
+    }
+
+    return databaseProblem(env, problemNumber);
+  }
+
   if (url.pathname === "/api/organizations") {
     return databaseOrganizations(env);
   }
 
-  if (
-    url.pathname.startsWith(
-      "/api/organizations/"
-    )
-  ) {
+  if (url.pathname.startsWith("/api/organizations/")) {
     const id = decodeURIComponent(
       url.pathname.split("/").pop()!
     );
@@ -738,9 +710,7 @@ export async function handleApi(
   }
 
   if (url.pathname === "/api/matches") {
-    const q =
-      url.searchParams.get("q")?.trim() ??
-      "";
+    const q = url.searchParams.get("q")?.trim() ?? "";
 
     if (!q) {
       return json(
@@ -752,51 +722,26 @@ export async function handleApi(
     return databaseMatches(env, q);
   }
 
-  if (
-    url.pathname ===
-    "/api/relationship"
-  ) {
-    const a =
-      url.searchParams.get("a");
-
-    const b =
-      url.searchParams.get("b");
+  if (url.pathname === "/api/relationship") {
+    const a = url.searchParams.get("a");
+    const b = url.searchParams.get("b");
 
     if (!a || !b) {
       return json(
-        {
-          error:
-            "A_AND_B_REQUIRED"
-        },
+        { error: "A_AND_B_REQUIRED" },
         400
       );
     }
 
-    return databaseRelationship(
-      env,
-      a,
-      b
-    );
+    return databaseRelationship(env, a, b);
   }
 
-  /*
-    FIRST CIVIC-INTELLIGENCE ENDPOINT.
-  */
-
-  if (
-    url.pathname ===
-    "/api/who-should-talk"
-  ) {
-    const q =
-      url.searchParams.get("q")?.trim() ??
-      "";
+  if (url.pathname === "/api/who-should-talk") {
+    const q = url.searchParams.get("q")?.trim() ?? "";
 
     if (!q) {
       return json(
-        {
-          error:
-            "QUERY_REQUIRED"
-        },
+        { error: "QUERY_REQUIRED" },
         400
       );
     }
