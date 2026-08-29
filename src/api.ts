@@ -11,6 +11,11 @@ import {
   getProject,
   listFundingGaps
 } from "./projects";
+import {
+  listOutcomes,
+  getOutcome,
+  listRechecks
+} from "./outcomes";
 import type { Env } from "./types";
 
 function json(data: unknown, status = 200) {
@@ -217,6 +222,8 @@ async function databaseSummary(env: Env) {
           (SELECT COUNT(*) FROM projects) AS projects,
           (SELECT COUNT(*) FROM funding_commitments) AS funding_commitments,
           (SELECT COUNT(*) FROM outcomes) AS outcomes,
+          (SELECT COUNT(*) FROM outcome_verifications) AS outcome_verifications,
+          (SELECT COUNT(*) FROM rechecks) AS rechecks,
           (SELECT COUNT(*) FROM ledger_records) AS ledger_records
       `);
 
@@ -760,6 +767,99 @@ export async function handleApi(
         source:
           "PostgreSQL project intelligence",
         ...project
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  if (url.pathname === "/api/outcomes") {
+    try {
+      const outcomes = await listOutcomes(env);
+
+      return json({
+        source:
+          "PostgreSQL outcome registry",
+        count: outcomes.length,
+        outcomes
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  const outcomeMatch =
+    url.pathname.match(
+      /^\/api\/outcomes\/(.+)$/
+    );
+
+  if (outcomeMatch) {
+    try {
+      const outcomeId =
+        decodeURIComponent(
+          outcomeMatch[1]
+        );
+
+      const outcome =
+        await getOutcome(
+          env,
+          outcomeId
+        );
+
+      if (!outcome) {
+        return json(
+          { error: "OUTCOME_NOT_FOUND" },
+          404
+        );
+      }
+
+      return json({
+        source:
+          "PostgreSQL outcome intelligence",
+        ...outcome
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  if (url.pathname === "/api/rechecks") {
+    try {
+      const rechecks =
+        await listRechecks(env);
+
+      return json({
+        source:
+          "PostgreSQL recheck registry",
+        count: rechecks.length,
+        rechecks
       });
     } catch (error) {
       return json(
