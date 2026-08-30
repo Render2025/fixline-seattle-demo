@@ -537,9 +537,118 @@ async function whoShouldTalk(
   query: string
 ) {
   try {
-    const terms = queryTerms(query);
+    const problem = await withDatabase(
+      env,
+      async client => {
+        const result = await client.query(
+          `
+          SELECT
+            problem_number,
+            name
+          FROM problems
+          WHERE
+            LOWER(TRIM(name)) = LOWER(TRIM($1))
+            OR problem_number::text = TRIM($1)
+          ORDER BY problem_number
+          LIMIT 1;
+          `,
+          [query]
+        );
 
-    const organizations =
+        return result.rows[0] ?? null;
+      }
+    );
+
+    let organizations: any[] = [];
+
+    if (problem) {
+      const ontology =
+        await getProblemOrganizationMatches(
+          env,
+          Number(problem.problem_number)
+        );
+
+      organizations = ontology.organizations.map(
+        (match: any) => ({
+          id: match.organization_id,
+          display_name: match.organization,
+          explanation_paths:
+            match.explanation_paths
+        })
+      );
+
+      const pairs: any[] = [];
+
+      for (
+        let i = 0;
+        i < organizations.length;
+        i++
+      ) {
+        for (
+          let j = i + 1;
+          j < organizations.length;
+          j++
+        ) {
+          const a = organizations[i];
+          const b = organizations[j];
+
+          const relationship =
+            await existingRelationship(
+              env,
+              a.id,
+              b.id
+            );
+
+          pairs.push({
+            classification:
+              relationship
+                ? "KNOWN_RELATIONSHIP"
+                : "NOT_ESTABLISHED_IN_FIXLINE",
+
+            organization_a: {
+              id: a.id,
+              name: a.display_name,
+              explanation_paths:
+                a.explanation_paths
+            },
+
+            organization_b: {
+              id: b.id,
+              name: b.display_name,
+              explanation_paths:
+                b.explanation_paths
+            },
+
+            existing_relationship:
+              relationship || null,
+
+            human_review_required: true
+          });
+        }
+      }
+
+      return json({
+        query,
+        source: "PostgreSQL FixLine ontology graph",
+        engine: "FixLine Who Should Talk v0.2",
+        mode: "ONTOLOGY_PAIR_DISCOVERY",
+        problem: {
+          problem_number:
+            Number(problem.problem_number),
+          name: problem.name
+        },
+        safeguards: {
+          relationship_absence_proves_novelty: false,
+          match_suggestion_proves_partnership: false,
+          overlap_proves_partnership: false,
+          human_review_required: true
+        },
+        candidates: pairs
+      });
+    }
+
+    const terms = queryTerms(query);
+    organizations =
       await findOrganizationsForTerms(
         env,
         terms,
@@ -568,43 +677,24 @@ async function whoShouldTalk(
             b.id
           );
 
-        const scoreA =
-          Number(a.match_count);
-
-        const scoreB =
-          Number(b.match_count);
-
-        let classification =
-          "NEEDS_MORE_EVIDENCE";
-
-        if (relationship) {
-          classification =
-            "REDUNDANT_ALREADY_EXISTS";
-        } else if (
-          scoreA >= 2 &&
-          scoreB >= 2
-        ) {
-          classification =
-            "NOVEL_CANDIDATE";
-        }
-
         pairs.push({
-          classification,
+          classification:
+            relationship
+              ? "KNOWN_RELATIONSHIP"
+              : "NOT_ESTABLISHED_IN_FIXLINE",
 
           organization_a: {
             id: a.id,
-            name: a.display_name,
-            relevance_score: scoreA
+            name: a.display_name
           },
 
           organization_b: {
             id: b.id,
-            name: b.display_name,
-            relevance_score: scoreB
+            name: b.display_name
           },
 
           existing_relationship:
-            relationship,
+            relationship || null,
 
           human_review_required: true
         });
@@ -616,6 +706,13 @@ async function whoShouldTalk(
       source: "PostgreSQL civic graph",
       engine:
         "FixLine Who Should Talk v0.1",
+      mode: "TEXT_PAIR_DISCOVERY",
+      safeguards: {
+        relationship_absence_proves_novelty: false,
+        match_suggestion_proves_partnership: false,
+        overlap_proves_partnership: false,
+        human_review_required: true
+      },
       candidates: pairs
     });
   } catch (error) {
