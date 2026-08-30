@@ -411,20 +411,8 @@ async function queryProblemOrganizationMatches(
 
       o.current_capacity,
 
-      CASE
-        WHEN EXISTS (
-          SELECT 1
-          FROM relationships r
-          WHERE
-            (
-              r.organization_a_id = o.id
-              OR r.organization_b_id = o.id
-            )
-            AND r.status = 'CONFIRMED'
-        )
-        THEN 'KNOWN_RELATIONSHIP_EXISTS_IN_FIXLINE'
-        ELSE 'NOT_ESTABLISHED_IN_FIXLINE'
-      END AS relationship_knowledge_status
+      'NOT_EVALUATED_FOR_SPECIFIC_PAIR'::text
+        AS relationship_knowledge_status
 
     FROM problems p
 
