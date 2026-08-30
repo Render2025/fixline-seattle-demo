@@ -1,715 +1,1265 @@
+import { pilotStats } from "./core";
 import { withDatabase } from "./db";
+
+import {
+  getProblemByNumber,
+  listProblems,
+  getProblemCapabilities,
+  getProblemIntelligence
+} from "./problem-intelligence";
+
+import {
+  listProjects,
+  getProject,
+  listFundingGaps
+} from "./projects";
+
+import {
+  listOutcomes,
+  getOutcome,
+  listRechecks
+} from "./outcomes";
+
+import {
+  listLedger,
+  getLedgerRecord,
+  listOpenUnfinishedWork
+} from "./ledger";
+
 import type { Env } from "./types";
 
-/**
- * FixLine ontology layer
- *
- * Generic traversal:
- *
- * Problem
- *   → Need Dimension
- *   → Capability Family
- *   → Capability
- *   → Organization Capability
- *   → Organization
- *
- * IMPORTANT:
- * - No organization names are encoded in the ontology.
- * - Organizations surface only because they possess a verified capability.
- * - An organization match does NOT imply capacity, eligibility, availability,
- *   partnership, or willingness to collaborate.
- * - Relationship absence is NOT evidence of novelty.
- */
-
-export async function installFoodIntelligenceModel(env: Env) {
-  return withDatabase(env, async client => {
-    await client.query("BEGIN");
-
-    try {
-      /*
-       * ------------------------------------------------------------
-       * 1. UNIVERSAL ONTOLOGY TABLES
-       * ------------------------------------------------------------
-       */
-
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS problem_need_dimensions (
-          id TEXT PRIMARY KEY,
-          problem_id TEXT NOT NULL
-            REFERENCES problems(id) ON DELETE CASCADE,
-          name TEXT NOT NULL,
-          description TEXT,
-          status TEXT NOT NULL DEFAULT 'ACTIVE',
-          UNIQUE(problem_id, name)
-        );
-      `);
-
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS capability_families (
-          id TEXT PRIMARY KEY,
-          name TEXT NOT NULL UNIQUE,
-          description TEXT,
-          status TEXT NOT NULL DEFAULT 'ACTIVE'
-        );
-      `);
-
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS capability_family_members (
-          capability_family_id TEXT NOT NULL
-            REFERENCES capability_families(id) ON DELETE CASCADE,
-          capability_id TEXT NOT NULL
-            REFERENCES capabilities(id) ON DELETE CASCADE,
-          relationship_type TEXT NOT NULL DEFAULT 'MEMBER',
-          PRIMARY KEY (
-            capability_family_id,
-            capability_id
-          )
-        );
-      `);
-
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS problem_need_capability_families (
-          problem_need_dimension_id TEXT NOT NULL
-            REFERENCES problem_need_dimensions(id) ON DELETE CASCADE,
-          capability_family_id TEXT NOT NULL
-            REFERENCES capability_families(id) ON DELETE CASCADE,
-          relevance TEXT NOT NULL DEFAULT 'DIRECT',
-          PRIMARY KEY (
-            problem_need_dimension_id,
-            capability_family_id
-          )
-        );
-      `);
-
-      /*
-       * ------------------------------------------------------------
-       * 2. RESOLVE FOOD INSECURITY PROBLEM
-       * ------------------------------------------------------------
-       *
-       * Problem #5 is used only as the first acceptance-test
-       * configuration. The matcher itself is generic.
-       */
-
-      const problemResult = await client.query(`
-        SELECT id, problem_number, name
-        FROM problems
-        WHERE problem_number = 5
-        LIMIT 1;
-      `);
-
-      if (!problemResult.rows.length) {
-        throw new Error(
-          "Problem #5 Food Insecurity was not found."
-        );
-      }
-
-      const problemId = problemResult.rows[0].id;
-
-      /*
-       * ------------------------------------------------------------
-       * 3. FOOD INSECURITY NEED DIMENSIONS — ACCEPTANCE TEST v0.1
-       * ------------------------------------------------------------
-       *
-       * Need Dimensions describe the demand side:
-       * WHAT kind of need has to be met.
-       *
-       * They do not identify providers.
-       */
-
-      const needDimensions = [
-        {
-          id: "need-food-immediate-access",
-          name: "Immediate Food Access",
-          description:
-            "People need timely access to sufficient groceries, distributed food, prepared meals, or other direct food assistance."
-        },
-        {
-          id: "need-food-nutrition-benefits",
-          name: "Nutrition and Specialized Food Support",
-          description:
-            "People may require public nutrition benefits or specialized nutrition support such as WIC and maternal-child nutrition services."
-        }
-      ];
-
-      for (const need of needDimensions) {
-        await client.query(
-          `
-          INSERT INTO problem_need_dimensions (
-            id,
-            problem_id,
-            name,
-            description,
-            status
-          )
-          VALUES ($1, $2, $3, $4, 'ACTIVE')
-          ON CONFLICT (id)
-          DO UPDATE SET
-            problem_id = EXCLUDED.problem_id,
-            name = EXCLUDED.name,
-            description = EXCLUDED.description,
-            status = 'ACTIVE';
-          `,
-          [
-            need.id,
-            problemId,
-            need.name,
-            need.description
-          ]
-        );
-      }
-
-      /*
-       * ------------------------------------------------------------
-       * 4. CAPABILITY FAMILIES
-       * ------------------------------------------------------------
-       *
-       * Capability Families describe the supply side:
-       * WHAT KIND of organizational ability can meet a Need Dimension.
-       *
-       * They normalize differently named local capabilities.
-       */
-
-      const capabilityFamilies = [
-        {
-          id: "family-direct-food-provision",
-          name: "Direct Food Provision",
-          description:
-            "Capabilities that directly provide, distribute, prepare, deliver, or otherwise make food available to people."
-        },
-        {
-          id: "family-nutrition-specialized-support",
-          name: "Nutrition Benefits and Specialized Food Support",
-          description:
-            "Capabilities providing nutrition-benefit access or specialized nutrition assistance."
-        }
-      ];
-
-      for (const family of capabilityFamilies) {
-        await client.query(
-          `
-          INSERT INTO capability_families (
-            id,
-            name,
-            description,
-            status
-          )
-          VALUES ($1, $2, $3, 'ACTIVE')
-          ON CONFLICT (id)
-          DO UPDATE SET
-            name = EXCLUDED.name,
-            description = EXCLUDED.description,
-            status = 'ACTIVE';
-          `,
-          [
-            family.id,
-            family.name,
-            family.description
-          ]
-        );
-      }
-
-      /*
-       * ------------------------------------------------------------
-       * 5. REMOVE OLD FOOD-FAMILY MEMBERSHIPS
-       * ------------------------------------------------------------
-       *
-       * Earlier versions intentionally explored broad associations
-       * such as transportation, case management, language access,
-       * funding, and health.
-       *
-       * Those may be relevant to food-system analysis later, but they
-       * are NOT sufficient by themselves to make an organization a
-       * direct Food Insecurity match.
-       *
-       * Leaving them in this acceptance test would create false
-       * positives and make the benchmark meaningless.
-       */
-
-      const foodFamilyIds = [
-        "family-food-emergency-access",
-        "family-food-prepared-meals",
-        "family-food-home-delivery",
-        "family-food-benefits",
-        "family-food-cultural-access",
-        "family-food-clinical",
-        "family-food-system",
-        "family-food-navigation",
-        "family-direct-food-provision",
-        "family-nutrition-specialized-support"
-      ];
-
-      await client.query(
-        `
-        DELETE FROM capability_family_members
-        WHERE capability_family_id = ANY($1::text[]);
-        `,
-        [foodFamilyIds]
-      );
-
-      await client.query(
-        `
-        DELETE FROM problem_need_capability_families
-        WHERE problem_need_dimension_id IN (
-          SELECT id
-          FROM problem_need_dimensions
-          WHERE problem_id = $1
-        );
-        `,
-        [problemId]
-      );
-
-      /*
-       * Deactivate superseded Food-specific dimensions/families rather
-       * than deleting them. This preserves history and prevents old
-       * exploratory mappings from participating in current traversal.
-       */
-
-      await client.query(
-        `
-        UPDATE problem_need_dimensions
-        SET status = 'INACTIVE'
-        WHERE problem_id = $1
-          AND id NOT IN (
-            'need-food-immediate-access',
-            'need-food-nutrition-benefits'
-          );
-        `,
-        [problemId]
-      );
-
-      await client.query(`
-        UPDATE capability_families
-        SET status = 'INACTIVE'
-        WHERE id IN (
-          'family-food-emergency-access',
-          'family-food-prepared-meals',
-          'family-food-home-delivery',
-          'family-food-benefits',
-          'family-food-cultural-access',
-          'family-food-clinical',
-          'family-food-system',
-          'family-food-navigation'
-        );
-      `);
-
-      /*
-       * ------------------------------------------------------------
-       * 6. VERIFIED CAPABILITY MEMBERSHIPS
-       * ------------------------------------------------------------
-       *
-       * CRITICAL:
-       * These are CAPABILITY IDs only.
-       *
-       * No organization names appear here.
-       *
-       * The Food Insecurity acceptance test succeeds only if the
-       * generic graph traversal finds organizations through these
-       * capabilities.
-       */
-
-      const directFoodCapabilityIds = [
-        "cap-food-security",
-        "cap-food-assistance",
-        "cap-food-distribution",
-        "cap-food-access",
-        "cap-food-and-nutrition-programs",
-        "cap-meal-preparation-distribution",
-        "cap-meals-on-wheels",
-        "cap-community-dining"
-      ];
-
-      const nutritionCapabilityIds = [
-        "cap-wic-first-steps"
-      ];
-
-      async function addExistingCapabilitiesToFamily(
-        familyId: string,
-        capabilityIds: string[]
-      ) {
-        for (const capabilityId of capabilityIds) {
-          const capabilityResult = await client.query(
-            `
-            SELECT id
-            FROM capabilities
-            WHERE id = $1
-            LIMIT 1;
-            `,
-            [capabilityId]
-          );
-
-          /*
-           * Do not invent missing capability records.
-           *
-           * A missing capability means the source vocabulary or seed
-           * data needs repair. It should not silently become a new
-           * asserted capability.
-           */
-          if (!capabilityResult.rows.length) {
-            continue;
-          }
-
-          await client.query(
-            `
-            INSERT INTO capability_family_members (
-              capability_family_id,
-              capability_id,
-              relationship_type
-            )
-            VALUES ($1, $2, 'MEMBER')
-            ON CONFLICT (
-              capability_family_id,
-              capability_id
-            )
-            DO UPDATE SET
-              relationship_type = 'MEMBER';
-            `,
-            [
-              familyId,
-              capabilityId
-            ]
-          );
-        }
-      }
-
-      await addExistingCapabilitiesToFamily(
-        "family-direct-food-provision",
-        directFoodCapabilityIds
-      );
-
-      await addExistingCapabilitiesToFamily(
-        "family-nutrition-specialized-support",
-        nutritionCapabilityIds
-      );
-
-      /*
-       * ------------------------------------------------------------
-       * 7. NEED DIMENSION → CAPABILITY FAMILY BRIDGE
-       * ------------------------------------------------------------
-       */
-
-      const needFamilyMap = [
-        {
-          needId: "need-food-immediate-access",
-          familyId: "family-direct-food-provision"
-        },
-        {
-          needId: "need-food-nutrition-benefits",
-          familyId: "family-nutrition-specialized-support"
-        }
-      ];
-
-      for (const mapping of needFamilyMap) {
-        await client.query(
-          `
-          INSERT INTO problem_need_capability_families (
-            problem_need_dimension_id,
-            capability_family_id,
-            relevance
-          )
-          VALUES ($1, $2, 'DIRECT')
-          ON CONFLICT (
-            problem_need_dimension_id,
-            capability_family_id
-          )
-          DO UPDATE SET
-            relevance = 'DIRECT';
-          `,
-          [
-            mapping.needId,
-            mapping.familyId
-          ]
-        );
-      }
-
-      /*
-       * ------------------------------------------------------------
-       * 8. SCHEMA VERSION
-       * ------------------------------------------------------------
-       */
-
-      await client.query(`
-        INSERT INTO schema_version (
-          version,
-          description
-        )
-        VALUES (
-          'fixline-core-015',
-          'Generic explainable ontology matcher and frozen Food Insecurity acceptance-test mapping'
-        )
-        ON CONFLICT DO NOTHING;
-      `);
-
-      await client.query("COMMIT");
-
-      /*
-       * ------------------------------------------------------------
-       * 9. INSTALLATION VERIFICATION
-       * ------------------------------------------------------------
-       */
-
-      const verification = await queryProblemOrganizationMatches(
-        client,
-        5
-      );
-
-      return {
-        ok: true,
-        migration: "fixline-core-015",
-        problem: problemResult.rows[0],
-        model:
-          "Problem → Need Dimension → Capability Family → Capability → Organization",
-        matched_organizations:
-          verification.organizations.length,
-        organizations:
-          verification.organizations,
-        paths:
-          verification.paths
-      };
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
+function json(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "access-control-allow-origin": "*"
     }
   });
 }
 
-/**
- * Generic public matcher.
- *
- * This function contains NO Food-specific logic.
- *
- * Any Problem that has:
- *
- *   Problem
- *     → NeedDimension
- *     → CapabilityFamily
- *     → Capability
- *
- * mappings can use this same traversal.
- */
-export async function getProblemOrganizationMatches(
+function queryTerms(query: string) {
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .map(x => x.trim())
+    .filter(x => x.length > 2);
+}
+
+async function findOrganizationsForTerms(
   env: Env,
-  problemNumber: number
+  terms: string[],
+  limit = 10
 ) {
+  if (!terms.length) return [];
+
   return withDatabase(env, async client => {
-    return queryProblemOrganizationMatches(
-      client,
-      problemNumber
+    const result = await client.query(
+      `
+      WITH org_data AS (
+        SELECT
+          o.id,
+          o.location_id,
+          o.display_name,
+          o.organization_type,
+          o.verification_status,
+          o.website,
+          o.service_area,
+          o.status,
+          o.last_verified_at,
+          o.availability_or_constraints,
+          o.source_authority,
+          o.evidence_note,
+          o.current_capacity,
+
+          COALESCE(
+            json_agg(c.name ORDER BY c.name)
+            FILTER (WHERE c.id IS NOT NULL),
+            '[]'::json
+          ) AS verified_capabilities,
+
+          LOWER(
+            COALESCE(o.display_name, '') || ' ' ||
+            COALESCE(o.organization_type, '') || ' ' ||
+            COALESCE(string_agg(c.name, ' '), '')
+          ) AS search_text
+
+        FROM organizations o
+
+        LEFT JOIN organization_capabilities oc
+          ON oc.organization_id = o.id
+
+        LEFT JOIN capabilities c
+          ON c.id = oc.capability_id
+
+        GROUP BY
+          o.id,
+          o.location_id,
+          o.display_name,
+          o.organization_type,
+          o.verification_status,
+          o.website,
+          o.service_area,
+          o.status,
+          o.last_verified_at,
+          o.availability_or_constraints,
+          o.source_authority,
+          o.evidence_note,
+          o.current_capacity
+      )
+
+      SELECT
+        *,
+        (
+          SELECT COUNT(*)
+          FROM unnest($1::text[]) AS term
+          WHERE search_text LIKE '%' || term || '%'
+        ) AS match_count
+
+      FROM org_data
+
+      WHERE (
+        SELECT COUNT(*)
+        FROM unnest($1::text[]) AS term
+        WHERE search_text LIKE '%' || term || '%'
+      ) > 0
+
+      ORDER BY
+        match_count DESC,
+        display_name ASC
+
+      LIMIT $2
+      `,
+      [terms, limit]
     );
+
+    return result.rows;
   });
 }
 
-/**
- * Internal generic SQL implementation.
- */
-async function queryProblemOrganizationMatches(
-  client: any,
-  problemNumber: number
+async function existingRelationship(
+  env: Env,
+  a: string,
+  b: string
 ) {
-  const result = await client.query(
-    `
-    SELECT DISTINCT
-      p.id AS problem_id,
-      p.problem_number,
-      p.name AS problem_name,
+  return withDatabase(env, async client => {
+    const result = await client.query(
+      `
+      SELECT
+        r.id,
+        r.organization_a_id,
+        oa.display_name AS organization_a_name,
+        r.organization_b_id,
+        ob.display_name AS organization_b_name,
+        r.relationship_type,
+        r.status,
+        r.evidence_note,
+        r.source_url,
+        r.verified_at
 
-      nd.id AS need_dimension_id,
-      nd.name AS need_dimension,
+      FROM relationships r
 
-      cf.id AS capability_family_id,
-      cf.name AS capability_family,
+      LEFT JOIN organizations oa
+        ON oa.id = r.organization_a_id
 
-      c.id AS capability_id,
-      c.name AS capability,
+      LEFT JOIN organizations ob
+        ON ob.id = r.organization_b_id
 
-      o.id AS organization_id,
-      o.display_name AS organization,
-
-      oc.availability_status,
-
-      o.current_capacity,
-
-      CASE
-        WHEN EXISTS (
-          SELECT 1
-          FROM relationships r
-          WHERE
-            (
-              r.subject_a_id = o.id
-              OR r.subject_b_id = o.id
-            )
-            AND r.status = 'CONFIRMED'
+      WHERE
+        (
+          r.organization_a_id = $1
+          AND r.organization_b_id = $2
         )
-        THEN 'KNOWN_RELATIONSHIP_EXISTS_IN_FIXLINE'
-        ELSE 'NOT_ESTABLISHED_IN_FIXLINE'
-      END AS relationship_knowledge_status
+        OR
+        (
+          r.organization_a_id = $2
+          AND r.organization_b_id = $1
+        )
 
-    FROM problems p
+      LIMIT 1
+      `,
+      [a, b]
+    );
 
-    JOIN problem_need_dimensions nd
-      ON nd.problem_id = p.id
-     AND nd.status = 'ACTIVE'
+    return result.rows[0] ?? null;
+  });
+}
 
-    JOIN problem_need_capability_families pncf
-      ON pncf.problem_need_dimension_id = nd.id
-     AND pncf.relevance = 'DIRECT'
+async function dbHealth(env: Env) {
+  try {
+    const result = await withDatabase(env, async client => {
+      const query = await client.query(`
+        SELECT
+          NOW() AS database_time,
+          current_database() AS database_name,
+          current_user AS database_user,
+          version() AS postgres_version
+      `);
 
-    JOIN capability_families cf
-      ON cf.id = pncf.capability_family_id
-     AND cf.status = 'ACTIVE'
+      return query.rows[0];
+    });
 
-    JOIN capability_family_members cfm
-      ON cfm.capability_family_id = cf.id
+    return json({
+      ok: true,
+      database: "PostgreSQL",
+      hyperdrive: true,
+      connection: "Cloudflare Hyperdrive -> Neon",
+      result
+    });
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error)
+      },
+      500
+    );
+  }
+}
 
-    JOIN capabilities c
-      ON c.id = cfm.capability_id
+async function databaseSummary(env: Env) {
+  try {
+    const counts = await withDatabase(env, async client => {
+      const result = await client.query(`
+        SELECT
+          (SELECT COUNT(*) FROM organizations) AS organizations,
+          (SELECT COUNT(*) FROM capabilities) AS capabilities,
+          (SELECT COUNT(*) FROM organization_capabilities) AS capability_edges,
+          (SELECT COUNT(*) FROM relationships) AS relationships,
+          (SELECT COUNT(*) FROM problems) AS problems,
+          (SELECT COUNT(*) FROM problem_capabilities) AS problem_capability_edges,
+          (SELECT COUNT(*) FROM projects) AS projects,
+          (SELECT COUNT(*) FROM funding_commitments) AS funding_commitments,
+          (SELECT COUNT(*) FROM outcomes) AS outcomes,
+          (SELECT COUNT(*) FROM outcome_verifications) AS outcome_verifications,
+          (SELECT COUNT(*) FROM rechecks) AS rechecks,
+          (SELECT COUNT(*) FROM ledger_records) AS ledger_records
+      `);
 
-    JOIN organization_capabilities oc
-      ON oc.capability_id = c.id
+      return result.rows[0];
+    });
 
-    JOIN organizations o
-      ON o.id = oc.organization_id
+    return json({
+      ok: true,
+      source: "persistent PostgreSQL",
+      connection: "Cloudflare Worker -> Hyperdrive -> Neon",
+      counts
+    });
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error)
+      },
+      500
+    );
+  }
+}
 
-    WHERE p.problem_number = $1
+async function databaseOrganizations(env: Env) {
+  try {
+    const organizations = await withDatabase(env, async client => {
+      const result = await client.query(`
+        SELECT
+          o.id,
+          o.location_id,
+          o.display_name,
+          o.organization_type,
+          o.verification_status,
+          o.website,
+          o.service_area,
+          o.status,
+          o.last_verified_at,
+          o.availability_or_constraints,
+          o.source_authority,
+          o.evidence_note,
+          o.current_capacity,
 
-    ORDER BY
-      o.display_name,
-      nd.name,
-      cf.name,
-      c.name;
-    `,
-    [problemNumber]
-  );
+          COALESCE(
+            json_agg(c.name ORDER BY c.name)
+            FILTER (WHERE c.id IS NOT NULL),
+            '[]'::json
+          ) AS verified_capabilities
 
-  /*
-   * One organization may legitimately have several explanation paths.
-   *
-   * We preserve all paths rather than collapsing them into an opaque
-   * relevance score.
-   */
+        FROM organizations o
 
-  const organizationMap = new Map<
-    string,
-    {
-      organization_id: string;
-      organization: string;
-      relationship_knowledge_status: string;
-      current_capacity: unknown;
-      availability_statuses: string[];
-      explanation_paths: Array<{
-        problem: string;
-        need_dimension: string;
-        capability_family: string;
-        capability: string;
-        capability_id: string;
-      }>;
+        LEFT JOIN organization_capabilities oc
+          ON oc.organization_id = o.id
+
+        LEFT JOIN capabilities c
+          ON c.id = oc.capability_id
+
+        GROUP BY
+          o.id,
+          o.location_id,
+          o.display_name,
+          o.organization_type,
+          o.verification_status,
+          o.website,
+          o.service_area,
+          o.status,
+          o.last_verified_at,
+          o.availability_or_constraints,
+          o.source_authority,
+          o.evidence_note,
+          o.current_capacity
+
+        ORDER BY o.display_name
+      `);
+
+      return result.rows;
+    });
+
+    return json(organizations);
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error)
+      },
+      500
+    );
+  }
+}
+
+async function databaseOrganization(
+  env: Env,
+  id: string
+) {
+  try {
+    const organization = await withDatabase(env, async client => {
+      const result = await client.query(
+        `
+        SELECT
+          o.id,
+          o.location_id,
+          o.display_name,
+          o.organization_type,
+          o.verification_status,
+          o.website,
+          o.service_area,
+          o.status,
+          o.last_verified_at,
+          o.availability_or_constraints,
+          o.source_authority,
+          o.evidence_note,
+          o.current_capacity,
+
+          COALESCE(
+            json_agg(c.name ORDER BY c.name)
+            FILTER (WHERE c.id IS NOT NULL),
+            '[]'::json
+          ) AS verified_capabilities
+
+        FROM organizations o
+
+        LEFT JOIN organization_capabilities oc
+          ON oc.organization_id = o.id
+
+        LEFT JOIN capabilities c
+          ON c.id = oc.capability_id
+
+        WHERE o.id = $1
+
+        GROUP BY
+          o.id,
+          o.location_id,
+          o.display_name,
+          o.organization_type,
+          o.verification_status,
+          o.website,
+          o.service_area,
+          o.status,
+          o.last_verified_at,
+          o.availability_or_constraints,
+          o.source_authority,
+          o.evidence_note,
+          o.current_capacity
+        `,
+        [id]
+      );
+
+      return result.rows[0] ?? null;
+    });
+
+    if (!organization) {
+      return json(
+        { error: "ORGANIZATION_NOT_FOUND" },
+        404
+      );
     }
-  >();
 
-  for (const row of result.rows) {
-    if (!organizationMap.has(row.organization_id)) {
-      organizationMap.set(
-        row.organization_id,
-        {
-          organization_id:
-            row.organization_id,
+    return json(organization);
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error)
+      },
+      500
+    );
+  }
+}
 
-          organization:
-            row.organization,
+async function databaseMatches(
+  env: Env,
+  query: string
+) {
+  try {
+    const terms = queryTerms(query);
 
-          relationship_knowledge_status:
-            row.relationship_knowledge_status,
+    const matches =
+      await findOrganizationsForTerms(
+        env,
+        terms,
+        20
+      );
 
+    return json({
+      query,
+      source: "PostgreSQL civic graph",
+      terms,
+      results: matches.map((row: any) => ({
+        organization: {
+          id: row.id,
+          display_name: row.display_name,
+          organization_type:
+            row.organization_type,
+          website: row.website,
+          verified_capabilities:
+            row.verified_capabilities,
           current_capacity:
-            row.current_capacity,
+            row.current_capacity
+        },
+        score: Number(row.match_count)
+      }))
+    });
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        query,
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error)
+      },
+      500
+    );
+  }
+}
 
-          availability_statuses: [],
+async function whoShouldTalk(
+  env: Env,
+  query: string
+) {
+  try {
+    const terms = queryTerms(query);
 
-          explanation_paths: []
-        }
+    const organizations =
+      await findOrganizationsForTerms(
+        env,
+        terms,
+        6
       );
-    }
 
-    const organization =
-      organizationMap.get(row.organization_id)!;
+    const pairs: any[] = [];
 
-    if (
-      row.availability_status &&
-      !organization.availability_statuses.includes(
-        row.availability_status
-      )
+    for (
+      let i = 0;
+      i < organizations.length;
+      i++
     ) {
-      organization.availability_statuses.push(
-        row.availability_status
-      );
+      for (
+        let j = i + 1;
+        j < organizations.length;
+        j++
+      ) {
+        const a = organizations[i];
+        const b = organizations[j];
+
+        const relationship =
+          await existingRelationship(
+            env,
+            a.id,
+            b.id
+          );
+
+        const scoreA =
+          Number(a.match_count);
+
+        const scoreB =
+          Number(b.match_count);
+
+        let classification =
+          "NEEDS_MORE_EVIDENCE";
+
+        if (relationship) {
+          classification =
+            "REDUNDANT_ALREADY_EXISTS";
+        } else if (
+          scoreA >= 2 &&
+          scoreB >= 2
+        ) {
+          classification =
+            "NOVEL_CANDIDATE";
+        }
+
+        pairs.push({
+          classification,
+
+          organization_a: {
+            id: a.id,
+            name: a.display_name,
+            relevance_score: scoreA
+          },
+
+          organization_b: {
+            id: b.id,
+            name: b.display_name,
+            relevance_score: scoreB
+          },
+
+          existing_relationship:
+            relationship,
+
+          human_review_required: true
+        });
+      }
     }
 
-    organization.explanation_paths.push({
-      problem:
-        row.problem_name,
+    return json({
+      query,
+      source: "PostgreSQL civic graph",
+      engine:
+        "FixLine Who Should Talk v0.1",
+      candidates: pairs
+    });
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        query,
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error)
+      },
+      500
+    );
+  }
+}
 
-      need_dimension:
-        row.need_dimension,
+export async function handleApi(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const url = new URL(request.url);
 
-      capability_family:
-        row.capability_family,
-
-      capability:
-        row.capability,
-
-      capability_id:
-        row.capability_id
+  if (url.pathname === "/health") {
+    return json({
+      ok: true,
+      service: "FixLine",
+      mode: env.FIXLINE_MODE,
+      time:
+        new Date().toISOString()
     });
   }
 
-  return {
-    problem_number: problemNumber,
+  if (
+    url.pathname ===
+    "/api/db-health"
+  ) {
+    return dbHealth(env);
+  }
 
-    organizations:
-      Array.from(organizationMap.values()),
+  if (
+    url.pathname ===
+    "/api/database"
+  ) {
+    return databaseSummary(env);
+  }
 
-    paths:
-      result.rows.map((row: any) => ({
-        problem_id:
-          row.problem_id,
+  if (
+    url.pathname ===
+    "/api/stats"
+  ) {
+    return json(pilotStats());
+  }
 
-        problem_number:
-          row.problem_number,
+  /*
+    PROBLEMS
+  */
 
+  if (
+    url.pathname ===
+    "/api/problems"
+  ) {
+    try {
+      const problems =
+        await listProblems(env);
+
+      return json({
+        source:
+          "PostgreSQL unfinished-work registry",
+        count: problems.length,
+        problems
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  const intelligenceMatch =
+    url.pathname.match(
+      /^\/api\/problems\/(\d+)\/intelligence$/
+    );
+
+  if (intelligenceMatch) {
+    try {
+      const result =
+        await getProblemIntelligence(
+          env,
+          Number(intelligenceMatch[1])
+        );
+
+      if (!result) {
+        return json(
+          {
+            error:
+              "PROBLEM_NOT_FOUND"
+          },
+          404
+        );
+      }
+
+      return json({
+        source:
+          "PostgreSQL FixLine civic-intelligence graph",
+        engine:
+          "FixLine Problem Intelligence v0.1",
+        ...result
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  const capabilityMatch =
+    url.pathname.match(
+      /^\/api\/problems\/(\d+)\/capabilities$/
+    );
+
+  if (capabilityMatch) {
+    try {
+      const result =
+        await getProblemCapabilities(
+          env,
+          Number(capabilityMatch[1])
+        );
+
+      if (!result) {
+        return json(
+          {
+            error:
+              "PROBLEM_NOT_FOUND"
+          },
+          404
+        );
+      }
+
+      return json({
+        source:
+          "PostgreSQL problem-capability graph",
         problem:
-          row.problem_name,
+          result.problem,
+        capability_count:
+          result.capabilities.length,
+        capabilities:
+          result.capabilities
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
 
-        need_dimension_id:
-          row.need_dimension_id,
+  const problemMatch =
+    url.pathname.match(
+      /^\/api\/problems\/(\d+)$/
+    );
 
-        need_dimension:
-          row.need_dimension,
+  if (problemMatch) {
+    try {
+      const problem =
+        await getProblemByNumber(
+          env,
+          Number(problemMatch[1])
+        );
 
-        capability_family_id:
-          row.capability_family_id,
+      if (!problem) {
+        return json(
+          {
+            error:
+              "PROBLEM_NOT_FOUND"
+          },
+          404
+        );
+      }
 
-        capability_family:
-          row.capability_family,
+      return json({
+        source:
+          "PostgreSQL unfinished-work registry",
+        problem
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
 
-        capability_id:
-          row.capability_id,
+  /*
+    PROJECTS + FUNDING
+  */
 
-        capability:
-          row.capability,
+  if (
+    url.pathname ===
+    "/api/projects"
+  ) {
+    try {
+      const projects =
+        await listProjects(env);
 
-        organization_id:
-          row.organization_id,
+      return json({
+        source:
+          "PostgreSQL project registry",
+        count:
+          projects.length,
+        projects
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
 
-        organization:
-          row.organization,
+  if (
+    url.pathname ===
+    "/api/funding-gaps"
+  ) {
+    try {
+      const gaps =
+        await listFundingGaps(env);
 
-        availability_status:
-          row.availability_status,
+      return json({
+        source:
+          "PostgreSQL funding-gap registry",
+        count:
+          gaps.length,
+        funding_gaps:
+          gaps
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
 
-        current_capacity:
-          row.current_capacity,
+  const projectMatch =
+    url.pathname.match(
+      /^\/api\/projects\/(.+)$/
+    );
 
-        relationship_knowledge_status:
-          row.relationship_knowledge_status
-      }))
-  };
+  if (projectMatch) {
+    try {
+      const projectId =
+        decodeURIComponent(
+          projectMatch[1]
+        );
+
+      const project =
+        await getProject(
+          env,
+          projectId
+        );
+
+      if (!project) {
+        return json(
+          {
+            error:
+              "PROJECT_NOT_FOUND"
+          },
+          404
+        );
+      }
+
+      return json({
+        source:
+          "PostgreSQL project intelligence",
+        ...project
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  /*
+    OUTCOMES + VERIFICATION + RECHECK
+  */
+
+  if (
+    url.pathname ===
+    "/api/outcomes"
+  ) {
+    try {
+      const outcomes =
+        await listOutcomes(env);
+
+      return json({
+        source:
+          "PostgreSQL outcome registry",
+        count:
+          outcomes.length,
+        outcomes
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  const outcomeMatch =
+    url.pathname.match(
+      /^\/api\/outcomes\/(.+)$/
+    );
+
+  if (outcomeMatch) {
+    try {
+      const outcomeId =
+        decodeURIComponent(
+          outcomeMatch[1]
+        );
+
+      const outcome =
+        await getOutcome(
+          env,
+          outcomeId
+        );
+
+      if (!outcome) {
+        return json(
+          {
+            error:
+              "OUTCOME_NOT_FOUND"
+          },
+          404
+        );
+      }
+
+      return json({
+        source:
+          "PostgreSQL outcome intelligence",
+        ...outcome
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  if (
+    url.pathname ===
+    "/api/rechecks"
+  ) {
+    try {
+      const rechecks =
+        await listRechecks(env);
+
+      return json({
+        source:
+          "PostgreSQL recheck registry",
+        count:
+          rechecks.length,
+        rechecks
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  /*
+    UNFINISHED-WORK LEDGER
+  */
+
+  if (
+    url.pathname ===
+    "/api/ledger"
+  ) {
+    try {
+      const records =
+        await listLedger(env);
+
+      return json({
+        source:
+          "PostgreSQL unfinished-work ledger",
+        count:
+          records.length,
+        records
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  if (
+    url.pathname ===
+    "/api/unfinished-work"
+  ) {
+    try {
+      const records =
+        await listOpenUnfinishedWork(
+          env
+        );
+
+      return json({
+        source:
+          "PostgreSQL unfinished-work ledger",
+        definition:
+          "Records not currently classified as CLOSED, SUSTAINED, or RESOLVED.",
+        count:
+          records.length,
+        unfinished_work:
+          records,
+        safeguards: {
+          open_record_does_not_prove_program_failure:
+            true,
+          absence_of_record_does_not_prove_problem_solved:
+            true,
+          durable_resolution_requires_verification_and_recheck:
+            true
+        }
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  const ledgerMatch =
+    url.pathname.match(
+      /^\/api\/ledger\/(.+)$/
+    );
+
+  if (ledgerMatch) {
+    try {
+      const ledgerId =
+        decodeURIComponent(
+          ledgerMatch[1]
+        );
+
+      const record =
+        await getLedgerRecord(
+          env,
+          ledgerId
+        );
+
+      if (!record) {
+        return json(
+          {
+            error:
+              "LEDGER_RECORD_NOT_FOUND"
+          },
+          404
+        );
+      }
+
+      return json({
+        source:
+          "PostgreSQL unfinished-work ledger",
+        record
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  /*
+    ORGANIZATIONS
+  */
+
+  if (
+    url.pathname ===
+    "/api/organizations"
+  ) {
+    return databaseOrganizations(
+      env
+    );
+  }
+
+  if (
+    url.pathname.startsWith(
+      "/api/organizations/"
+    )
+  ) {
+    const id =
+      decodeURIComponent(
+        url.pathname
+          .split("/")
+          .pop()!
+      );
+
+    return databaseOrganization(
+      env,
+      id
+    );
+  }
+
+  /*
+    SEARCH
+  */
+
+  if (
+    url.pathname ===
+    "/api/matches"
+  ) {
+    const q =
+      url.searchParams
+        .get("q")
+        ?.trim() ?? "";
+
+    if (!q) {
+      return json(
+        {
+          error:
+            "QUERY_REQUIRED"
+        },
+        400
+      );
+    }
+
+    return databaseMatches(
+      env,
+      q
+    );
+  }
+
+  /*
+    RELATIONSHIP CHECK
+  */
+
+  if (
+    url.pathname ===
+    "/api/relationship"
+  ) {
+    const a =
+      url.searchParams.get("a");
+
+    const b =
+      url.searchParams.get("b");
+
+    if (!a || !b) {
+      return json(
+        {
+          error:
+            "A_AND_B_REQUIRED"
+        },
+        400
+      );
+    }
+
+    try {
+      const relationship =
+        await existingRelationship(
+          env,
+          a,
+          b
+        );
+
+      return json({
+        source:
+          "PostgreSQL civic graph",
+
+        relationship_found:
+          Boolean(relationship),
+
+        relationship,
+
+        interpretation:
+          relationship
+            ? "FixLine contains a relationship record for this pair."
+            : "No relationship is recorded in the bounded FixLine graph. This does not prove that no real-world relationship exists."
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  /*
+    WHO SHOULD TALK
+  */
+
+  if (
+    url.pathname ===
+    "/api/who-should-talk"
+  ) {
+    const q =
+      url.searchParams
+        .get("q")
+        ?.trim() ?? "";
+
+    if (!q) {
+      return json(
+        {
+          error:
+            "QUERY_REQUIRED"
+        },
+        400
+      );
+    }
+
+    return whoShouldTalk(
+      env,
+      q
+    );
+  }
+
+  return json(
+    {
+      error:
+        "NOT_FOUND"
+    },
+    404
+  );
 }
