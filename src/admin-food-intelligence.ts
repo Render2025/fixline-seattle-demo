@@ -1,15 +1,42 @@
 import { withDatabase } from "./db";
 import type { Env } from "./types";
 
+/**
+ * FixLine ontology layer
+ *
+ * Generic traversal:
+ *
+ * Problem
+ *   → Need Dimension
+ *   → Capability Family
+ *   → Capability
+ *   → Organization Capability
+ *   → Organization
+ *
+ * IMPORTANT:
+ * - No organization names are encoded in the ontology.
+ * - Organizations surface only because they possess a verified capability.
+ * - An organization match does NOT imply capacity, eligibility, availability,
+ *   partnership, or willingness to collaborate.
+ * - Relationship absence is NOT evidence of novelty.
+ */
+
 export async function installFoodIntelligenceModel(env: Env) {
   return withDatabase(env, async client => {
     await client.query("BEGIN");
 
     try {
+      /*
+       * ------------------------------------------------------------
+       * 1. UNIVERSAL ONTOLOGY TABLES
+       * ------------------------------------------------------------
+       */
+
       await client.query(`
         CREATE TABLE IF NOT EXISTS problem_need_dimensions (
           id TEXT PRIMARY KEY,
-          problem_id TEXT NOT NULL REFERENCES problems(id) ON DELETE CASCADE,
+          problem_id TEXT NOT NULL
+            REFERENCES problems(id) ON DELETE CASCADE,
           name TEXT NOT NULL,
           description TEXT,
           status TEXT NOT NULL DEFAULT 'ACTIVE',
@@ -33,7 +60,10 @@ export async function installFoodIntelligenceModel(env: Env) {
           capability_id TEXT NOT NULL
             REFERENCES capabilities(id) ON DELETE CASCADE,
           relationship_type TEXT NOT NULL DEFAULT 'MEMBER',
-          PRIMARY KEY (capability_family_id, capability_id)
+          PRIMARY KEY (
+            capability_family_id,
+            capability_id
+          )
         );
       `);
 
@@ -52,71 +82,52 @@ export async function installFoodIntelligenceModel(env: Env) {
       `);
 
       /*
-        Problem #5 in the current FixLine registry.
-        This assumes the existing problem id follows the seeded registry.
-        We resolve it by problem_number instead of hard-coding the id.
-      */
+       * ------------------------------------------------------------
+       * 2. RESOLVE FOOD INSECURITY PROBLEM
+       * ------------------------------------------------------------
+       *
+       * Problem #5 is used only as the first acceptance-test
+       * configuration. The matcher itself is generic.
+       */
+
       const problemResult = await client.query(`
-        SELECT id
+        SELECT id, problem_number, name
         FROM problems
         WHERE problem_number = 5
         LIMIT 1;
       `);
 
       if (!problemResult.rows.length) {
-        throw new Error("Problem #5 Food Insecurity was not found.");
+        throw new Error(
+          "Problem #5 Food Insecurity was not found."
+        );
       }
 
       const problemId = problemResult.rows[0].id;
+
+      /*
+       * ------------------------------------------------------------
+       * 3. FOOD INSECURITY NEED DIMENSIONS — ACCEPTANCE TEST v0.1
+       * ------------------------------------------------------------
+       *
+       * Need Dimensions describe the demand side:
+       * WHAT kind of need has to be met.
+       *
+       * They do not identify providers.
+       */
 
       const needDimensions = [
         {
           id: "need-food-immediate-access",
           name: "Immediate Food Access",
           description:
-            "Households need timely access to sufficient food for immediate consumption."
+            "People need timely access to sufficient groceries, distributed food, prepared meals, or other direct food assistance."
         },
         {
-          id: "need-food-prepared-meals",
-          name: "Prepared Meals",
+          id: "need-food-nutrition-benefits",
+          name: "Nutrition and Specialized Food Support",
           description:
-            "Residents may require prepared or ready-to-eat meals rather than groceries alone."
-        },
-        {
-          id: "need-food-home-delivery",
-          name: "Home Delivery and Mobility",
-          description:
-            "Residents may be unable to reach food resources because of age, disability, transportation or mobility barriers."
-        },
-        {
-          id: "need-food-benefits",
-          name: "Nutrition Benefits",
-          description:
-            "Residents may need enrollment or navigation support for public nutrition benefits."
-        },
-        {
-          id: "need-food-cultural",
-          name: "Culturally Appropriate Food",
-          description:
-            "Food access may require culturally familiar, linguistically accessible and culturally responsive services."
-        },
-        {
-          id: "need-food-clinical",
-          name: "Clinical and Health Nutrition",
-          description:
-            "Food insecurity may intersect with maternal health, chronic disease and clinical nutrition needs."
-        },
-        {
-          id: "need-food-system",
-          name: "Food-System Infrastructure",
-          description:
-            "Food access depends on distribution, logistics, procurement and broader food-system infrastructure."
-        },
-        {
-          id: "need-food-navigation",
-          name: "Navigation and Wraparound Support",
-          description:
-            "Residents may need case management, referrals and broader basic-needs navigation."
+            "People may require public nutrition benefits or specialized nutrition support such as WIC and maternal-child nutrition services."
         }
       ];
 
@@ -147,58 +158,33 @@ export async function installFoodIntelligenceModel(env: Env) {
         );
       }
 
-      const families = [
+      /*
+       * ------------------------------------------------------------
+       * 4. CAPABILITY FAMILIES
+       * ------------------------------------------------------------
+       *
+       * Capability Families describe the supply side:
+       * WHAT KIND of organizational ability can meet a Need Dimension.
+       *
+       * They normalize differently named local capabilities.
+       */
+
+      const capabilityFamilies = [
         {
-          id: "family-food-emergency-access",
-          name: "Emergency Food Access",
+          id: "family-direct-food-provision",
+          name: "Direct Food Provision",
           description:
-            "Capabilities directly supporting immediate access to groceries or distributed food."
+            "Capabilities that directly provide, distribute, prepare, deliver, or otherwise make food available to people."
         },
         {
-          id: "family-food-prepared-meals",
-          name: "Prepared Meals",
+          id: "family-nutrition-specialized-support",
+          name: "Nutrition Benefits and Specialized Food Support",
           description:
-            "Capabilities related to preparing and distributing ready-to-eat meals."
-        },
-        {
-          id: "family-food-home-delivery",
-          name: "Home Delivery and Mobility",
-          description:
-            "Capabilities helping food reach residents who cannot easily travel to food resources."
-        },
-        {
-          id: "family-food-benefits",
-          name: "Nutrition Benefits",
-          description:
-            "Capabilities supporting access to nutrition assistance and related public programs."
-        },
-        {
-          id: "family-food-cultural-access",
-          name: "Culturally Appropriate Food Access",
-          description:
-            "Capabilities supporting culturally and linguistically responsive food access."
-        },
-        {
-          id: "family-food-clinical",
-          name: "Clinical and Health Nutrition",
-          description:
-            "Capabilities connecting nutrition assistance with health and clinical needs."
-        },
-        {
-          id: "family-food-system",
-          name: "Food-System Infrastructure",
-          description:
-            "Capabilities supporting distribution systems, logistics and food-system operations."
-        },
-        {
-          id: "family-food-navigation",
-          name: "Navigation and Wraparound Support",
-          description:
-            "Capabilities helping residents navigate food and broader basic-needs systems."
+            "Capabilities providing nutrition-benefit access or specialized nutrition assistance."
         }
       ];
 
-      for (const family of families) {
+      for (const family of capabilityFamilies) {
         await client.query(
           `
           INSERT INTO capability_families (
@@ -223,81 +209,141 @@ export async function installFoodIntelligenceModel(env: Env) {
       }
 
       /*
-        IMPORTANT:
-        These mappings use only capability names already expected
-        in the current bounded FixLine vocabulary.
+       * ------------------------------------------------------------
+       * 5. REMOVE OLD FOOD-FAMILY MEMBERSHIPS
+       * ------------------------------------------------------------
+       *
+       * Earlier versions intentionally explored broad associations
+       * such as transportation, case management, language access,
+       * funding, and health.
+       *
+       * Those may be relevant to food-system analysis later, but they
+       * are NOT sufficient by themselves to make an organization a
+       * direct Food Insecurity match.
+       *
+       * Leaving them in this acceptance test would create false
+       * positives and make the benchmark meaningless.
+       */
 
-        Missing capability names are skipped rather than invented.
-      */
-      const familyCapabilityNames: Record<string, string[]> = {
-        "family-food-emergency-access": [
-          "food assistance",
-          "food distribution",
-          "food access",
-          "food security"
-        ],
+      const foodFamilyIds = [
+        "family-food-emergency-access",
+        "family-food-prepared-meals",
+        "family-food-home-delivery",
+        "family-food-benefits",
+        "family-food-cultural-access",
+        "family-food-clinical",
+        "family-food-system",
+        "family-food-navigation",
+        "family-direct-food-provision",
+        "family-nutrition-specialized-support"
+      ];
 
-        "family-food-prepared-meals": [
-          "meal preparation and distribution",
-          "meal preparation/distribution",
-          "community dining",
-          "Meals on Wheels"
-        ],
+      await client.query(
+        `
+        DELETE FROM capability_family_members
+        WHERE capability_family_id = ANY($1::text[]);
+        `,
+        [foodFamilyIds]
+      );
 
-        "family-food-home-delivery": [
-          "Meals on Wheels",
-          "senior transportation",
-          "transportation",
-          "accessible transportation"
-        ],
+      await client.query(
+        `
+        DELETE FROM problem_need_capability_families
+        WHERE problem_need_dimension_id IN (
+          SELECT id
+          FROM problem_need_dimensions
+          WHERE problem_id = $1
+        );
+        `,
+        [problemId]
+      );
 
-        "family-food-benefits": [
-          "WIC / First Steps",
-          "benefits navigation",
-          "resource navigation"
-        ],
+      /*
+       * Deactivate superseded Food-specific dimensions/families rather
+       * than deleting them. This preserves history and prevents old
+       * exploratory mappings from participating in current traversal.
+       */
 
-        "family-food-cultural-access": [
-          "multilingual culturally responsive",
-          "language access",
-          "language support"
-        ],
+      await client.query(
+        `
+        UPDATE problem_need_dimensions
+        SET status = 'INACTIVE'
+        WHERE problem_id = $1
+          AND id NOT IN (
+            'need-food-immediate-access',
+            'need-food-nutrition-benefits'
+          );
+        `,
+        [problemId]
+      );
 
-        "family-food-clinical": [
-          "WIC / First Steps",
-          "parent-child health",
-          "healthcare outreach",
-          "health/wellness"
-        ],
+      await client.query(`
+        UPDATE capability_families
+        SET status = 'INACTIVE'
+        WHERE id IN (
+          'family-food-emergency-access',
+          'family-food-prepared-meals',
+          'family-food-home-delivery',
+          'family-food-benefits',
+          'family-food-cultural-access',
+          'family-food-clinical',
+          'family-food-system',
+          'family-food-navigation'
+        );
+      `);
 
-        "family-food-system": [
-          "food distribution",
-          "food security",
-          "human-services funding"
-        ],
+      /*
+       * ------------------------------------------------------------
+       * 6. VERIFIED CAPABILITY MEMBERSHIPS
+       * ------------------------------------------------------------
+       *
+       * CRITICAL:
+       * These are CAPABILITY IDs only.
+       *
+       * No organization names appear here.
+       *
+       * The Food Insecurity acceptance test succeeds only if the
+       * generic graph traversal finds organizations through these
+       * capabilities.
+       */
 
-        "family-food-navigation": [
-          "resource navigation",
-          "case management",
-          "wraparound basic needs",
-          "food assistance"
-        ]
-      };
+      const directFoodCapabilityIds = [
+        "cap-food-security",
+        "cap-food-assistance",
+        "cap-food-distribution",
+        "cap-food-access",
+        "cap-food-and-nutrition-programs",
+        "cap-meal-preparation-distribution",
+        "cap-meals-on-wheels",
+        "cap-community-dining"
+      ];
 
-      for (const [familyId, capabilityNames] of Object.entries(
-        familyCapabilityNames
-      )) {
-        for (const capabilityName of capabilityNames) {
+      const nutritionCapabilityIds = [
+        "cap-wic-first-steps"
+      ];
+
+      async function addExistingCapabilitiesToFamily(
+        familyId: string,
+        capabilityIds: string[]
+      ) {
+        for (const capabilityId of capabilityIds) {
           const capabilityResult = await client.query(
             `
             SELECT id
             FROM capabilities
-            WHERE LOWER(name) = LOWER($1)
+            WHERE id = $1
             LIMIT 1;
             `,
-            [capabilityName]
+            [capabilityId]
           );
 
+          /*
+           * Do not invent missing capability records.
+           *
+           * A missing capability means the source vocabulary or seed
+           * data needs repair. It should not silently become a new
+           * asserted capability.
+           */
           if (!capabilityResult.rows.length) {
             continue;
           }
@@ -310,52 +356,49 @@ export async function installFoodIntelligenceModel(env: Env) {
               relationship_type
             )
             VALUES ($1, $2, 'MEMBER')
-            ON CONFLICT DO NOTHING;
+            ON CONFLICT (
+              capability_family_id,
+              capability_id
+            )
+            DO UPDATE SET
+              relationship_type = 'MEMBER';
             `,
             [
               familyId,
-              capabilityResult.rows[0].id
+              capabilityId
             ]
           );
         }
       }
 
+      await addExistingCapabilitiesToFamily(
+        "family-direct-food-provision",
+        directFoodCapabilityIds
+      );
+
+      await addExistingCapabilitiesToFamily(
+        "family-nutrition-specialized-support",
+        nutritionCapabilityIds
+      );
+
+      /*
+       * ------------------------------------------------------------
+       * 7. NEED DIMENSION → CAPABILITY FAMILY BRIDGE
+       * ------------------------------------------------------------
+       */
+
       const needFamilyMap = [
-        [
-          "need-food-immediate-access",
-          "family-food-emergency-access"
-        ],
-        [
-          "need-food-prepared-meals",
-          "family-food-prepared-meals"
-        ],
-        [
-          "need-food-home-delivery",
-          "family-food-home-delivery"
-        ],
-        [
-          "need-food-benefits",
-          "family-food-benefits"
-        ],
-        [
-          "need-food-cultural",
-          "family-food-cultural-access"
-        ],
-        [
-          "need-food-clinical",
-          "family-food-clinical"
-        ],
-        [
-          "need-food-system",
-          "family-food-system"
-        ],
-        [
-          "need-food-navigation",
-          "family-food-navigation"
-        ]
+        {
+          needId: "need-food-immediate-access",
+          familyId: "family-direct-food-provision"
+        },
+        {
+          needId: "need-food-nutrition-benefits",
+          familyId: "family-nutrition-specialized-support"
+        }
       ];
 
-      for (const [needId, familyId] of needFamilyMap) {
+      for (const mapping of needFamilyMap) {
         await client.query(
           `
           INSERT INTO problem_need_capability_families (
@@ -364,11 +407,25 @@ export async function installFoodIntelligenceModel(env: Env) {
             relevance
           )
           VALUES ($1, $2, 'DIRECT')
-          ON CONFLICT DO NOTHING;
+          ON CONFLICT (
+            problem_need_dimension_id,
+            capability_family_id
+          )
+          DO UPDATE SET
+            relevance = 'DIRECT';
           `,
-          [needId, familyId]
+          [
+            mapping.needId,
+            mapping.familyId
+          ]
         );
       }
+
+      /*
+       * ------------------------------------------------------------
+       * 8. SCHEMA VERSION
+       * ------------------------------------------------------------
+       */
 
       await client.query(`
         INSERT INTO schema_version (
@@ -376,79 +433,283 @@ export async function installFoodIntelligenceModel(env: Env) {
           description
         )
         VALUES (
-          'fixline-core-011',
-          'Food Insecurity need dimensions and capability-family model'
+          'fixline-core-015',
+          'Generic explainable ontology matcher and frozen Food Insecurity acceptance-test mapping'
         )
         ON CONFLICT DO NOTHING;
       `);
 
       await client.query("COMMIT");
 
-      const verification = await client.query(
-        `
-        SELECT
-          p.problem_number,
-          p.name AS problem_name,
+      /*
+       * ------------------------------------------------------------
+       * 9. INSTALLATION VERIFICATION
+       * ------------------------------------------------------------
+       */
 
-          nd.name AS need_dimension,
-
-          cf.name AS capability_family,
-
-          c.name AS capability,
-
-          o.display_name AS organization,
-
-          o.current_capacity
-
-        FROM problems p
-
-        JOIN problem_need_dimensions nd
-          ON nd.problem_id = p.id
-
-        JOIN problem_need_capability_families pncf
-          ON pncf.problem_need_dimension_id = nd.id
-
-        JOIN capability_families cf
-          ON cf.id = pncf.capability_family_id
-
-        LEFT JOIN capability_family_members cfm
-          ON cfm.capability_family_id = cf.id
-
-        LEFT JOIN capabilities c
-          ON c.id = cfm.capability_id
-
-        LEFT JOIN organization_capabilities oc
-          ON oc.capability_id = c.id
-
-        LEFT JOIN organizations o
-          ON o.id = oc.organization_id
-
-        WHERE p.problem_number = 5
-
-        ORDER BY
-          nd.name,
-          cf.name,
-          c.name,
-          o.display_name;
-        `
+      const verification = await queryProblemOrganizationMatches(
+        client,
+        5
       );
 
       return {
         ok: true,
-        migration:
-          "fixline-core-011",
-        problem:
-          "Food Insecurity",
+        migration: "fixline-core-015",
+        problem: problemResult.rows[0],
         model:
           "Problem → Need Dimension → Capability Family → Capability → Organization",
-        rows:
-          verification.rows.length,
-        verification:
-          verification.rows
+        matched_organizations:
+          verification.organizations.length,
+        organizations:
+          verification.organizations,
+        paths:
+          verification.paths
       };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
     }
   });
+}
+
+/**
+ * Generic public matcher.
+ *
+ * This function contains NO Food-specific logic.
+ *
+ * Any Problem that has:
+ *
+ *   Problem
+ *     → NeedDimension
+ *     → CapabilityFamily
+ *     → Capability
+ *
+ * mappings can use this same traversal.
+ */
+export async function getProblemOrganizationMatches(
+  env: Env,
+  problemNumber: number
+) {
+  return withDatabase(env, async client => {
+    return queryProblemOrganizationMatches(
+      client,
+      problemNumber
+    );
+  });
+}
+
+/**
+ * Internal generic SQL implementation.
+ */
+async function queryProblemOrganizationMatches(
+  client: any,
+  problemNumber: number
+) {
+  const result = await client.query(
+    `
+    SELECT DISTINCT
+      p.id AS problem_id,
+      p.problem_number,
+      p.name AS problem_name,
+
+      nd.id AS need_dimension_id,
+      nd.name AS need_dimension,
+
+      cf.id AS capability_family_id,
+      cf.name AS capability_family,
+
+      c.id AS capability_id,
+      c.name AS capability,
+
+      o.id AS organization_id,
+      o.display_name AS organization,
+
+      oc.availability_status,
+
+      o.current_capacity,
+
+      CASE
+        WHEN EXISTS (
+          SELECT 1
+          FROM relationships r
+          WHERE
+            (
+              r.subject_a_id = o.id
+              OR r.subject_b_id = o.id
+            )
+            AND r.status = 'CONFIRMED'
+        )
+        THEN 'KNOWN_RELATIONSHIP_EXISTS_IN_FIXLINE'
+        ELSE 'NOT_ESTABLISHED_IN_FIXLINE'
+      END AS relationship_knowledge_status
+
+    FROM problems p
+
+    JOIN problem_need_dimensions nd
+      ON nd.problem_id = p.id
+     AND nd.status = 'ACTIVE'
+
+    JOIN problem_need_capability_families pncf
+      ON pncf.problem_need_dimension_id = nd.id
+     AND pncf.relevance = 'DIRECT'
+
+    JOIN capability_families cf
+      ON cf.id = pncf.capability_family_id
+     AND cf.status = 'ACTIVE'
+
+    JOIN capability_family_members cfm
+      ON cfm.capability_family_id = cf.id
+
+    JOIN capabilities c
+      ON c.id = cfm.capability_id
+
+    JOIN organization_capabilities oc
+      ON oc.capability_id = c.id
+
+    JOIN organizations o
+      ON o.id = oc.organization_id
+
+    WHERE p.problem_number = $1
+
+    ORDER BY
+      o.display_name,
+      nd.name,
+      cf.name,
+      c.name;
+    `,
+    [problemNumber]
+  );
+
+  /*
+   * One organization may legitimately have several explanation paths.
+   *
+   * We preserve all paths rather than collapsing them into an opaque
+   * relevance score.
+   */
+
+  const organizationMap = new Map<
+    string,
+    {
+      organization_id: string;
+      organization: string;
+      relationship_knowledge_status: string;
+      current_capacity: unknown;
+      availability_statuses: string[];
+      explanation_paths: Array<{
+        problem: string;
+        need_dimension: string;
+        capability_family: string;
+        capability: string;
+        capability_id: string;
+      }>;
+    }
+  >();
+
+  for (const row of result.rows) {
+    if (!organizationMap.has(row.organization_id)) {
+      organizationMap.set(
+        row.organization_id,
+        {
+          organization_id:
+            row.organization_id,
+
+          organization:
+            row.organization,
+
+          relationship_knowledge_status:
+            row.relationship_knowledge_status,
+
+          current_capacity:
+            row.current_capacity,
+
+          availability_statuses: [],
+
+          explanation_paths: []
+        }
+      );
+    }
+
+    const organization =
+      organizationMap.get(row.organization_id)!;
+
+    if (
+      row.availability_status &&
+      !organization.availability_statuses.includes(
+        row.availability_status
+      )
+    ) {
+      organization.availability_statuses.push(
+        row.availability_status
+      );
+    }
+
+    organization.explanation_paths.push({
+      problem:
+        row.problem_name,
+
+      need_dimension:
+        row.need_dimension,
+
+      capability_family:
+        row.capability_family,
+
+      capability:
+        row.capability,
+
+      capability_id:
+        row.capability_id
+    });
+  }
+
+  return {
+    problem_number: problemNumber,
+
+    organizations:
+      Array.from(organizationMap.values()),
+
+    paths:
+      result.rows.map((row: any) => ({
+        problem_id:
+          row.problem_id,
+
+        problem_number:
+          row.problem_number,
+
+        problem:
+          row.problem_name,
+
+        need_dimension_id:
+          row.need_dimension_id,
+
+        need_dimension:
+          row.need_dimension,
+
+        capability_family_id:
+          row.capability_family_id,
+
+        capability_family:
+          row.capability_family,
+
+        capability_id:
+          row.capability_id,
+
+        capability:
+          row.capability,
+
+        organization_id:
+          row.organization_id,
+
+        organization:
+          row.organization,
+
+        availability_status:
+          row.availability_status,
+
+        current_capacity:
+          row.current_capacity,
+
+        relationship_knowledge_status:
+          row.relationship_knowledge_status
+      }))
+  };
 }
