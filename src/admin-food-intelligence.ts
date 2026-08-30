@@ -144,6 +144,24 @@ export async function installFoodIntelligenceModel(env: Env) {
           name: "Nutrition Benefits and Specialized Food Support",
           description:
             "Capabilities providing nutrition-benefit access or specialized nutrition assistance."
+        },
+        {
+          id: "family-meal-production",
+          name: "Meal Production",
+          description:
+            "Capabilities that prepare meals or food for direct use by people in need."
+        },
+        {
+          id: "family-meal-delivery-access",
+          name: "Meal Delivery and Access",
+          description:
+            "Capabilities that deliver meals, support meal access, or provide direct food access pathways."
+        },
+        {
+          id: "family-benefits-nutrition-access",
+          name: "Benefits and Nutrition Access",
+          description:
+            "Capabilities that connect people to nutrition benefits and related food-support access services."
         }
       ];
 
@@ -181,7 +199,10 @@ export async function installFoodIntelligenceModel(env: Env) {
         "family-food-system",
         "family-food-navigation",
         "family-direct-food-provision",
-        "family-nutrition-specialized-support"
+        "family-nutrition-specialized-support",
+        "family-meal-production",
+        "family-meal-delivery-access",
+        "family-benefits-nutrition-access"
       ];
 
       await client.query(
@@ -299,14 +320,45 @@ export async function installFoodIntelligenceModel(env: Env) {
         nutritionCapabilityIds
       );
 
+      await addExistingCapabilitiesToFamily(
+        "family-meal-production",
+        ["cap-meal-preparation"]
+      );
+
+      await addExistingCapabilitiesToFamily(
+        "family-meal-delivery-access",
+        [
+          "cap-meal-distribution",
+          "cap-home-delivered-meals",
+          "cap-congregate-community-dining"
+        ]
+      );
+
+      await addExistingCapabilitiesToFamily(
+        "family-benefits-nutrition-access",
+        ["cap-wic-related-nutrition-support"]
+      );
+
       const needFamilyMap = [
         {
           needId: "need-food-immediate-access",
           familyId: "family-direct-food-provision"
         },
         {
+          needId: "need-food-immediate-access",
+          familyId: "family-meal-production"
+        },
+        {
+          needId: "need-food-immediate-access",
+          familyId: "family-meal-delivery-access"
+        },
+        {
           needId: "need-food-nutrition-benefits",
           familyId: "family-nutrition-specialized-support"
+        },
+        {
+          needId: "need-food-nutrition-benefits",
+          familyId: "family-benefits-nutrition-access"
         }
       ];
 
