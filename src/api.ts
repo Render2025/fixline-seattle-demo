@@ -26,6 +26,10 @@ import {
   listOpenUnfinishedWork
 } from "./ledger";
 
+import {
+  getProblemOrganizationMatches
+} from "./admin-food-intelligence";
+
 import type { Env } from "./types";
 
 function json(data: unknown, status = 200) {
@@ -713,6 +717,84 @@ export async function handleApi(
       return json(
         {
           ok: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  /*
+    GENERIC ONTOLOGY MATCHER
+
+    This is the acceptance-test endpoint for the repaired matcher.
+
+    Example:
+      /api/problems/5/matches
+
+    It traverses:
+      Problem
+      â†’ Need Dimension
+      â†’ Capability Family
+      â†’ Capability
+      â†’ Organization
+
+    It does not use organization-name exceptions.
+  */
+
+  const ontologyMatch =
+    url.pathname.match(
+      /^\/api\/problems\/(\d+)\/matches$/
+    );
+
+  if (ontologyMatch) {
+    try {
+      const problemNumber =
+        Number(ontologyMatch[1]);
+
+      const result =
+        await getProblemOrganizationMatches(
+          env,
+          problemNumber
+        );
+
+      return json({
+        source:
+          "PostgreSQL FixLine ontology graph",
+
+        engine:
+          "FixLine Explainable Problem Matcher v0.1",
+
+        method:
+          "Problem â†’ Need Dimension â†’ Capability Family â†’ Capability â†’ Organization",
+
+        safeguards: {
+          organization_name_exceptions:
+            false,
+
+          relationship_absence_proves_novelty:
+            false,
+
+          capability_implies_current_capacity:
+            false,
+
+          capability_implies_current_availability:
+            false
+        },
+
+        matched_organization_count:
+          result.organizations.length,
+
+        ...result
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
+
           error:
             error instanceof Error
               ? error.message
