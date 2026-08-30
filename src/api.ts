@@ -164,12 +164,85 @@ async function getCollaborationCandidates(
         distinct_need_dimensions: allNeedDimensions.size
       };
 
-      candidateGroups.push({
-        organizations: combo.map((organization: any) => ({
+      const capabilityCounts = new Map<string, number>();
+      const capabilityFamilyCounts = new Map<string, number>();
+      const needDimensionCounts = new Map<string, number>();
+
+      for (const organization of combo) {
+        for (const capability of organization.capability_coverage) {
+          capabilityCounts.set(
+            capability,
+            (capabilityCounts.get(capability) ?? 0) + 1
+          );
+        }
+
+        for (const family of organization.capability_family_coverage) {
+          capabilityFamilyCounts.set(
+            family,
+            (capabilityFamilyCounts.get(family) ?? 0) + 1
+          );
+        }
+
+        for (const need of organization.need_dimension_coverage) {
+          needDimensionCounts.set(
+            need,
+            (needDimensionCounts.get(need) ?? 0) + 1
+          );
+        }
+      }
+
+      const organizationsWithMarginalAnalysis = combo.map((organization: any) => {
+        const uniqueCapabilities = [...new Set(organization.capability_coverage)]
+          .filter((capability: string) => (capabilityCounts.get(capability) ?? 0) === 1)
+          .sort();
+
+        const sharedCapabilities = [...new Set(organization.capability_coverage)]
+          .filter((capability: string) => (capabilityCounts.get(capability) ?? 0) > 1)
+          .sort();
+
+        const uniqueCapabilityFamilies = [...new Set(organization.capability_family_coverage)]
+          .filter((family: string) => (capabilityFamilyCounts.get(family) ?? 0) === 1)
+          .sort();
+
+        const sharedCapabilityFamilies = [...new Set(organization.capability_family_coverage)]
+          .filter((family: string) => (capabilityFamilyCounts.get(family) ?? 0) > 1)
+          .sort();
+
+        const uniqueNeedDimensions = [...new Set(organization.need_dimension_coverage)]
+          .filter((need: string) => (needDimensionCounts.get(need) ?? 0) === 1)
+          .sort();
+
+        const sharedNeedDimensions = [...new Set(organization.need_dimension_coverage)]
+          .filter((need: string) => (needDimensionCounts.get(need) ?? 0) > 1)
+          .sort();
+
+        const structurallyRedundantInGroup =
+          uniqueCapabilities.length === 0 &&
+          uniqueCapabilityFamilies.length === 0 &&
+          uniqueNeedDimensions.length === 0;
+
+        return {
           id: organization.id,
           name: organization.name,
-          explanation_paths: organization.explanation_paths
-        })),
+          explanation_paths: organization.explanation_paths,
+          marginal_contribution: {
+            unique_capabilities: uniqueCapabilities,
+            unique_capability_families: uniqueCapabilityFamilies,
+            unique_need_dimensions: uniqueNeedDimensions,
+            shared_capabilities: sharedCapabilities,
+            shared_capability_families: sharedCapabilityFamilies,
+            shared_need_dimensions: sharedNeedDimensions,
+            structurally_redundant_in_group: structurallyRedundantInGroup
+          }
+        };
+      });
+
+      const structurallyRedundantMembers = organizationsWithMarginalAnalysis.filter(
+        (organization: any) => organization.marginal_contribution.structurally_redundant_in_group
+      );
+
+      candidateGroups.push({
+        organizations: organizationsWithMarginalAnalysis,
         structural_score: structuralScore,
         rationale: {
           capability_coverage: [
@@ -181,6 +254,14 @@ async function getCollaborationCandidates(
           need_dimension_coverage: [
             ...allNeedDimensions
           ]
+        },
+        marginal_analysis: {
+          all_members_add_unique_value:
+            structurallyRedundantMembers.length === 0,
+          structurally_redundant_member_count:
+            structurallyRedundantMembers.length,
+          structurally_redundant_member_ids:
+            structurallyRedundantMembers.map((organization: any) => organization.id)
         },
         relationship_status:
           "NOT_EVALUATED_FOR_GROUP",
