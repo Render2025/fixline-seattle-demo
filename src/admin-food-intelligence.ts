@@ -7,11 +7,11 @@ import type { Env } from "./types";
  * Generic traversal:
  *
  * Problem
- *   â†’ Need Dimension
- *   â†’ Capability Family
- *   â†’ Capability
- *   â†’ Organization Capability
- *   â†’ Organization
+ *   → Need Dimension
+ *   → Capability Family
+ *   → Capability
+ *   → Organization Capability
+ *   → Organization
  *
  * IMPORTANT:
  * - No organization names are encoded in the ontology.
@@ -357,7 +357,7 @@ export async function installFoodIntelligenceModel(env: Env) {
         migration: "fixline-core-015",
         problem: problemResult.rows[0],
         model:
-          "Problem â†’ Need Dimension â†’ Capability Family â†’ Capability â†’ Organization",
+          "Problem → Need Dimension → Capability Family → Capability → Organization",
         matched_organizations:
           verification.organizations.length,
         organizations:
