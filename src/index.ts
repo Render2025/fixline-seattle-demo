@@ -4,6 +4,11 @@ import { buildReviewBundle } from "./review-bundle";
 import { installFoodIntelligenceModel } from "./admin-food-intelligence";
 import { installPublicRecordsIngestionModel } from "./public-records-ingestion";
 import { installLocationBootstrapModel } from "./location-bootstrap";
+import {
+  installBootstrapReadinessPersistence,
+  getProblemBootstrapReadiness,
+  calculateAndPersistProblemReadiness
+} from "./bootstrap-readiness-db";
 import type { Env } from "./types";
 
 export default {
@@ -14,7 +19,7 @@ export default {
     const url = new URL(request.url);
 
     /*
-      Temporary read-only architecture review bundle.
+      Temporary architecture review bundle.
     */
     if (url.pathname === "/api/review-bundle") {
       try {
@@ -31,172 +36,205 @@ export default {
           }
         );
       } catch (error) {
-        return new Response(
-          JSON.stringify(
-            {
-              ok: false,
-              error: "Unable to construct review bundle.",
-              detail:
-                error instanceof Error
-                  ? error.message
-                  : String(error)
-            },
-            null,
-            2
-          ),
-          {
-            status: 500,
-            headers: {
-              "content-type": "application/json; charset=utf-8"
-            }
-          }
+        return jsonError(
+          "Unable to construct review bundle.",
+          error
         );
       }
     }
 
     /*
-      TEMPORARY ADMIN ROUTE:
-      Food Intelligence migration.
+      TEMPORARY MIGRATION:
+      Food Intelligence.
     */
     if (
       url.pathname ===
       "/api/admin/install-food-intelligence"
     ) {
       try {
-        const result =
-          await installFoodIntelligenceModel(env);
-
-        return new Response(
-          JSON.stringify(result, null, 2),
-          {
-            status: 200,
-            headers: {
-              "content-type": "application/json; charset=utf-8",
-              "cache-control": "no-store"
-            }
-          }
+        return jsonResponse(
+          await installFoodIntelligenceModel(env)
         );
       } catch (error) {
-        return new Response(
-          JSON.stringify(
-            {
-              ok: false,
-              error:
-                "Food intelligence migration failed.",
-              detail:
-                error instanceof Error
-                  ? error.message
-                  : String(error)
-            },
-            null,
-            2
-          ),
-          {
-            status: 500,
-            headers: {
-              "content-type": "application/json; charset=utf-8"
-            }
-          }
+        return jsonError(
+          "Food intelligence migration failed.",
+          error
         );
       }
     }
 
     /*
-      TEMPORARY ADMIN ROUTE:
-      Public-record ingestion schema migration.
+      TEMPORARY MIGRATION:
+      Public-record ingestion schema.
     */
     if (
       url.pathname ===
       "/api/admin/install-public-records-ingestion"
     ) {
       try {
-        const result =
-          await installPublicRecordsIngestionModel(env);
-
-        return new Response(
-          JSON.stringify(result, null, 2),
-          {
-            status: 200,
-            headers: {
-              "content-type": "application/json; charset=utf-8",
-              "cache-control": "no-store"
-            }
-          }
+        return jsonResponse(
+          await installPublicRecordsIngestionModel(env)
         );
       } catch (error) {
-        return new Response(
-          JSON.stringify(
-            {
-              ok: false,
-              error:
-                "Public-record ingestion migration failed.",
-              detail:
-                error instanceof Error
-                  ? error.message
-                  : String(error)
-            },
-            null,
-            2
-          ),
-          {
-            status: 500,
-            headers: {
-              "content-type": "application/json; charset=utf-8"
-            }
-          }
+        return jsonError(
+          "Public-record ingestion migration failed.",
+          error
         );
       }
     }
 
     /*
-      TEMPORARY ADMIN ROUTE:
-      Location Bootstrap migration.
+      TEMPORARY MIGRATION:
+      Location Bootstrap.
     */
     if (
       url.pathname ===
       "/api/admin/install-location-bootstrap"
     ) {
       try {
-        const result =
-          await installLocationBootstrapModel(env);
-
-        return new Response(
-          JSON.stringify(result, null, 2),
-          {
-            status: 200,
-            headers: {
-              "content-type": "application/json; charset=utf-8",
-              "cache-control": "no-store"
-            }
-          }
+        return jsonResponse(
+          await installLocationBootstrapModel(env)
         );
       } catch (error) {
-        return new Response(
-          JSON.stringify(
-            {
-              ok: false,
-              error:
-                "Location bootstrap migration failed.",
-              detail:
-                error instanceof Error
-                  ? error.message
-                  : String(error)
-            },
-            null,
-            2
-          ),
-          {
-            status: 500,
-            headers: {
-              "content-type": "application/json; charset=utf-8"
-            }
-          }
+        return jsonError(
+          "Location bootstrap migration failed.",
+          error
         );
       }
     }
 
     /*
-      FixLine API routes
+      TEMPORARY MIGRATION:
+      Bootstrap Readiness persistence.
+    */
+    if (
+      url.pathname ===
+      "/api/admin/install-bootstrap-readiness"
+    ) {
+      try {
+        return jsonResponse(
+          await installBootstrapReadinessPersistence(env)
+        );
+      } catch (error) {
+        return jsonError(
+          "Bootstrap readiness migration failed.",
+          error
+        );
+      }
+    }
+
+    /*
+      READ-ONLY:
+      Calculate readiness for one local problem without
+      changing the stored readiness record.
+
+      Example:
+      /api/bootstrap/readiness?id=<local-problem-priority-id>
+    */
+    if (
+      url.pathname ===
+      "/api/bootstrap/readiness"
+    ) {
+      const id =
+        url.searchParams.get("id");
+
+      if (!id) {
+        return jsonResponse(
+          {
+            ok: false,
+            error:
+              "Missing required query parameter: id"
+          },
+          400
+        );
+      }
+
+      try {
+        const result =
+          await getProblemBootstrapReadiness(
+            env,
+            id
+          );
+
+        if (!result) {
+          return jsonResponse(
+            {
+              ok: false,
+              error:
+                "Local problem priority not found.",
+              id
+            },
+            404
+          );
+        }
+
+        return jsonResponse({
+          ok: true,
+          ...result
+        });
+      } catch (error) {
+        return jsonError(
+          "Unable to calculate bootstrap readiness.",
+          error
+        );
+      }
+    }
+
+    /*
+      ADMIN:
+      Calculate and persist readiness.
+
+      Example:
+      /api/admin/calculate-readiness?id=<local-problem-priority-id>
+    */
+    if (
+      url.pathname ===
+      "/api/admin/calculate-readiness"
+    ) {
+      const id =
+        url.searchParams.get("id");
+
+      if (!id) {
+        return jsonResponse(
+          {
+            ok: false,
+            error:
+              "Missing required query parameter: id"
+          },
+          400
+        );
+      }
+
+      try {
+        const result =
+          await calculateAndPersistProblemReadiness(
+            env,
+            id
+          );
+
+        if (!result) {
+          return jsonResponse(
+            {
+              ok: false,
+              error:
+                "Local problem priority not found.",
+              id
+            },
+            404
+          );
+        }
+
+        return jsonResponse(result);
+      } catch (error) {
+        return jsonError(
+          "Unable to calculate and persist readiness.",
+          error
+        );
+      }
+    }
+
+    /*
+      Normal FixLine API.
     */
     if (
       url.pathname === "/health" ||
@@ -206,7 +244,7 @@ export default {
     }
 
     /*
-      Remote MCP endpoint
+      Remote MCP.
     */
     if (
       url.pathname === "/mcp" ||
@@ -216,8 +254,43 @@ export default {
     }
 
     /*
-      Public static interface
+      Public interface.
     */
     return env.ASSETS.fetch(request);
   }
 };
+
+function jsonResponse(
+  data: unknown,
+  status = 200
+): Response {
+  return new Response(
+    JSON.stringify(data, null, 2),
+    {
+      status,
+      headers: {
+        "content-type":
+          "application/json; charset=utf-8",
+        "cache-control":
+          "no-store"
+      }
+    }
+  );
+}
+
+function jsonError(
+  message: string,
+  error: unknown
+): Response {
+  return jsonResponse(
+    {
+      ok: false,
+      error: message,
+      detail:
+        error instanceof Error
+          ? error.message
+          : String(error)
+    },
+    500
+  );
+}
