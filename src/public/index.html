@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FixLine Seattle Demo</title>
+<style>
+body{font-family:Arial,sans-serif;margin:0;background:#f3f5f6;color:#17212b}
+main{max-width:1050px;margin:auto;padding:38px 22px 80px}h1{font-size:42px;margin-bottom:5px}
+.sub{color:#68737d;font-size:18px}.box{background:white;border:1px solid #dde3e7;border-radius:10px;padding:18px;margin:16px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.card{border:1px solid #dce2e5;border-radius:8px;padding:13px;background:#fff}.card b{font-size:26px;display:block;color:#0f5d75}
+input,select,button{font:inherit;padding:10px;border-radius:6px;border:1px solid #bfc9ce}input{width:min(620px,90%)}
+button{background:#173f4f;color:white;border:0;cursor:pointer}pre{white-space:pre-wrap;background:#f6f8f9;padding:14px;border-radius:7px;overflow:auto}
+.warn{background:#fff8e8;border-left:5px solid #b68300;padding:14px 18px}
+</style></head>
+<body><main>
+<h1>FixLine</h1>
+<div class="sub">Seattle / King County bounded civic-intelligence demonstration</div>
+<div class="warn"><b>Pilot candidate, not production.</b> This demo uses a bounded verified dataset. Capability does not mean current capacity, and a suggested connection does not mean an existing or appropriate partnership.</div>
+
+<div class="grid" id="stats"></div>
+
+<div class="box">
+<h2>Find organizations by civic need</h2>
+<input id="q" value="job training" placeholder="Try: job training, transportation, food, legal">
+<button onclick="search()">Find matches</button>
+<div id="results"></div>
+</div>
+
+<div class="box">
+<h2>Inspect a verified organization</h2>
+<select id="org"><option value="org-farestart">FareStart</option>
+<option value="org-public-health-seattle-king-county">Public Health — Seattle &amp; King County</option>
+<option value="org-harborview-medical-center">Harborview Medical Center</option>
+<option value="org-hopelink">Hopelink</option>
+<option value="org-king-county-metro-access-transportation">King County Metro Access Transportation</option>
+<option value="org-seattle-human-services-department">Seattle Human Services Department</option>
+<option value="org-asian-counseling-and-referral-service">Asian Counseling and Referral Service</option>
+<option value="org-choose-180">CHOOSE 180</option>
+<option value="org-community-passageways">Community Passageways</option>
+<option value="org-king-county-bar-association-housing-justice-project">King County Bar Association — Housing Justice Project</option>
+<option value="org-king-county-regional-homelessness-authority">King County Regional Homelessness Authority</option>
+<option value="org-king-county-behavioral-health-and-recovery-division">King County Behavioral Health and Recovery Division</option>
+<option value="org-seattle-office-of-economic-development">Seattle Office of Economic Development</option>
+<option value="org-sound-generations">Sound Generations</option>
+<option value="org-worksource-seattle-king-county">WorkSource Seattle-King County</option>
+<option value="org-jewish-family-service-of-seattle">Jewish Family Service of Seattle</option>
+<option value="org-ywca-seattle-king-snohomish">YWCA Seattle | King | Snohomish</option>
+<option value="org-evergreen-goodwill">Evergreen Goodwill</option></select>
+<button onclick="inspectOrg()">Inspect</button>
+<pre id="orgout"></pre>
+</div>
+
+<div class="box">
+<h2>MCP endpoint</h2>
+<p>This same Worker exposes a stateless remote MCP endpoint at <code>/mcp</code>.</p>
+<p>Tools: <code>get_pilot_stats</code>, <code>list_verified_organizations</code>, <code>get_organization</code>, <code>find_matching_organizations</code>, and <code>check_existing_relationship</code>.</p>
+</div>
+
+<script>
+async function j(url){const r=await fetch(url);return r.json();}
+async function load(){
+ const s=await j('/api/stats');
+ const cards=[
+ ['Problems',s.problems],['Verified orgs',s.verified_organizations],
+ ['Capability nodes',s.capability_nodes],['Capability edges',s.capability_edges],
+ ['Benchmark cases',s.benchmark_cases],['Unsafe allowed',s.benchmark_metrics.unsafe_allowed]
+ ];
+ document.querySelector('#stats').innerHTML=cards.map(x=>`<div class="card"><b>${x[1]}</b>${x[0]}</div>`).join('');
+}
+async function search(){
+ const q=document.querySelector('#q').value;
+ const d=await j('/api/matches?q='+encodeURIComponent(q));
+ document.querySelector('#results').innerHTML=d.results.length?d.results.slice(0,10).map(x=>`<div class="card" style="margin-top:10px"><b style="font-size:18px">${x.organization.display_name}</b><div>score ${x.score.toFixed(2)} · capacity ${x.organization.current_capacity}</div><div>${x.organization.verified_capabilities.join(', ')}</div></div>`).join(''):'<p>No direct capability/name match in bounded dataset.</p>';
+}
+async function inspectOrg(){
+ const id=document.querySelector('#org').value;
+ document.querySelector('#orgout').textContent=JSON.stringify(await j('/api/organizations/'+encodeURIComponent(id)),null,2);
+}
+load();search();inspectOrg();
+</script>
+</main></body></html>
