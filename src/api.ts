@@ -51,6 +51,170 @@ function queryTerms(query: string) {
     .filter(x => x.length > 2);
 }
 
+function combinations<T>(
+  values: T[],
+  size: number
+): T[][] {
+  if (size <= 0) return [[]];
+  if (values.length < size) return [];
+
+  if (size === 1) {
+    return values.map(value => [value]);
+  }
+
+  const result: T[][] = [];
+
+  for (let i = 0; i <= values.length - size; i++) {
+    const head = values[i];
+    const tail = values.slice(i + 1);
+
+    for (const rest of combinations(tail, size - 1)) {
+      result.push([head, ...rest]);
+    }
+  }
+
+  return result;
+}
+
+async function getCollaborationCandidates(
+  env: Env,
+  problemNumber: number
+) {
+  const result =
+    await getProblemOrganizationMatches(
+      env,
+      problemNumber
+    );
+
+  const organizations = result.organizations
+    .map((match: any) => {
+      const explanationPaths =
+        Array.isArray(match.explanation_paths)
+          ? match.explanation_paths
+          : [];
+
+      return {
+        id: match.organization_id,
+        name: match.organization,
+        explanation_paths: explanationPaths,
+        capability_coverage: [
+          ...new Set(
+            explanationPaths
+              .map((path: any) => path.capability)
+              .filter(Boolean)
+          )
+        ],
+        capability_family_coverage: [
+          ...new Set(
+            explanationPaths
+              .map((path: any) => path.capability_family)
+              .filter(Boolean)
+          )
+        ],
+        need_dimension_coverage: [
+          ...new Set(
+            explanationPaths
+              .map((path: any) => path.need_dimension)
+              .filter(Boolean)
+          )
+        ]
+      };
+    })
+    .filter((organization: any) =>
+      organization.explanation_paths.length > 0
+    );
+
+  if (!organizations.length) return [];
+
+  const candidateGroups: any[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const size of [5, 4, 3]) {
+    for (const combo of combinations(organizations, size)) {
+      const ids = combo
+        .map((organization: any) => organization.id)
+        .sort();
+
+      const key = ids.join("|");
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+
+      const allCapabilities = new Set<string>();
+      const allCapabilityFamilies = new Set<string>();
+      const allNeedDimensions = new Set<string>();
+
+      for (const organization of combo) {
+        for (const capability of organization.capability_coverage) {
+          allCapabilities.add(capability);
+        }
+
+        for (const family of organization.capability_family_coverage) {
+          allCapabilityFamilies.add(family);
+        }
+
+        for (const need of organization.need_dimension_coverage) {
+          allNeedDimensions.add(need);
+        }
+      }
+
+      const structuralScore = {
+        organization_count: combo.length,
+        distinct_capabilities: allCapabilities.size,
+        distinct_capability_families: allCapabilityFamilies.size,
+        distinct_need_dimensions: allNeedDimensions.size
+      };
+
+      candidateGroups.push({
+        organizations: combo.map((organization: any) => ({
+          id: organization.id,
+          name: organization.name,
+          explanation_paths: organization.explanation_paths
+        })),
+        structural_score: structuralScore,
+        rationale: {
+          capability_coverage: [
+            ...allCapabilities
+          ],
+          capability_family_coverage: [
+            ...allCapabilityFamilies
+          ],
+          need_dimension_coverage: [
+            ...allNeedDimensions
+          ]
+        },
+        relationship_status:
+          "NOT_EVALUATED_FOR_GROUP",
+        current_capacity_status:
+          "UNKNOWN",
+        current_availability_status:
+          "UNKNOWN",
+        human_review_required: true
+      });
+    }
+  }
+
+  return candidateGroups
+    .sort((a, b) => {
+      const aScore = a.structural_score;
+      const bScore = b.structural_score;
+
+      if (bScore.distinct_capabilities !== aScore.distinct_capabilities) {
+        return bScore.distinct_capabilities - aScore.distinct_capabilities;
+      }
+
+      if (bScore.distinct_capability_families !== aScore.distinct_capability_families) {
+        return bScore.distinct_capability_families - aScore.distinct_capability_families;
+      }
+
+      if (bScore.distinct_need_dimensions !== aScore.distinct_need_dimensions) {
+        return bScore.distinct_need_dimensions - aScore.distinct_need_dimensions;
+      }
+
+      return aScore.organization_count - bScore.organization_count;
+    })
+    .slice(0, 10);
+}
+
 async function findOrganizationsForTerms(
   env: Env,
   terms: string[],
@@ -958,6 +1122,71 @@ export async function handleApi(
         {
           ok: false,
 
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error)
+        },
+        500
+      );
+    }
+  }
+
+  const collaborationCandidatesMatch =
+    url.pathname.match(
+      /^\/api\/problems\/(\d+)\/collaboration-candidates$/
+    );
+
+  if (collaborationCandidatesMatch) {
+    try {
+      const problemNumber =
+        Number(collaborationCandidatesMatch[1]);
+
+      const problem =
+        await getProblemByNumber(
+          env,
+          problemNumber
+        );
+
+      const candidates =
+        await getCollaborationCandidates(
+          env,
+          problemNumber
+        );
+
+      return json({
+        problem: {
+          problem_number:
+            problemNumber,
+          name:
+            problem?.name ?? null
+        },
+        source:
+          "PostgreSQL FixLine ontology graph",
+        engine:
+          "FixLine Collaboration Candidate Engine v0.1",
+        mode:
+          "STRUCTURAL_COMPLEMENTARITY",
+        safeguards: {
+          organization_name_exceptions:
+            false,
+          partnership_inferred:
+            false,
+          relationship_absence_proves_novelty:
+            false,
+          capability_implies_capacity:
+            false,
+          capability_implies_availability:
+            false,
+          human_review_required:
+            true
+        },
+        candidates
+      });
+    } catch (error) {
+      return json(
+        {
+          ok: false,
           error:
             error instanceof Error
               ? error.message
