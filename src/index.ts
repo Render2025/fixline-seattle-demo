@@ -1,6 +1,7 @@
 import { handleApi } from "./api";
 import { mcpHandler } from "./mcp";
 import { buildReviewBundle } from "./review-bundle";
+import { installFoodIntelligenceModel } from "./admin-food-intelligence";
 import type { Env } from "./types";
 
 export default {
@@ -12,8 +13,6 @@ export default {
 
     /*
       Temporary read-only architecture review bundle.
-      This combines selected live FixLine datasets into
-      one response for external pilot review.
     */
     if (url.pathname === "/api/review-bundle") {
       try {
@@ -32,17 +31,63 @@ export default {
           }
         );
       } catch (error) {
-        console.error(
-          "FixLine review bundle error:",
-          error
-        );
-
         return new Response(
           JSON.stringify(
             {
               ok: false,
               error:
                 "Unable to construct review bundle.",
+              detail:
+                error instanceof Error
+                  ? error.message
+                  : String(error)
+            },
+            null,
+            2
+          ),
+          {
+            status: 500,
+            headers: {
+              "content-type":
+                "application/json; charset=utf-8"
+            }
+          }
+        );
+      }
+    }
+
+    /*
+      TEMPORARY ADMIN MIGRATION ROUTE.
+
+      Run once, verify the result, then remove this route.
+    */
+    if (
+      url.pathname ===
+      "/api/admin/install-food-intelligence"
+    ) {
+      try {
+        const result =
+          await installFoodIntelligenceModel(env);
+
+        return new Response(
+          JSON.stringify(result, null, 2),
+          {
+            status: 200,
+            headers: {
+              "content-type":
+                "application/json; charset=utf-8",
+              "cache-control":
+                "no-store"
+            }
+          }
+        );
+      } catch (error) {
+        return new Response(
+          JSON.stringify(
+            {
+              ok: false,
+              error:
+                "Food intelligence migration failed.",
               detail:
                 error instanceof Error
                   ? error.message
@@ -83,10 +128,7 @@ export default {
     }
 
     /*
-      Public static interface.
-
-      Cloudflare's ASSETS binding serves files
-      from the top-level ./public directory.
+      Public static interface
     */
     return env.ASSETS.fetch(request);
   }
