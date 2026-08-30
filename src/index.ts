@@ -2,6 +2,7 @@ import { handleApi } from "./api";
 import { mcpHandler } from "./mcp";
 import { buildReviewBundle } from "./review-bundle";
 import { installFoodIntelligenceModel } from "./admin-food-intelligence";
+import { installPublicRecordsIngestionModel } from "./public-records-ingestion";
 import type { Env } from "./types";
 
 export default {
@@ -23,10 +24,8 @@ export default {
           {
             status: 200,
             headers: {
-              "content-type":
-                "application/json; charset=utf-8",
-              "cache-control":
-                "no-store"
+              "content-type": "application/json; charset=utf-8",
+              "cache-control": "no-store"
             }
           }
         );
@@ -35,8 +34,7 @@ export default {
           JSON.stringify(
             {
               ok: false,
-              error:
-                "Unable to construct review bundle.",
+              error: "Unable to construct review bundle.",
               detail:
                 error instanceof Error
                   ? error.message
@@ -48,8 +46,7 @@ export default {
           {
             status: 500,
             headers: {
-              "content-type":
-                "application/json; charset=utf-8"
+              "content-type": "application/json; charset=utf-8"
             }
           }
         );
@@ -57,9 +54,8 @@ export default {
     }
 
     /*
-      TEMPORARY ADMIN MIGRATION ROUTE.
-
-      Run once, verify the result, then remove this route.
+      TEMPORARY ADMIN ROUTE:
+      Food Intelligence migration.
     */
     if (
       url.pathname ===
@@ -74,10 +70,8 @@ export default {
           {
             status: 200,
             headers: {
-              "content-type":
-                "application/json; charset=utf-8",
-              "cache-control":
-                "no-store"
+              "content-type": "application/json; charset=utf-8",
+              "cache-control": "no-store"
             }
           }
         );
@@ -99,8 +93,54 @@ export default {
           {
             status: 500,
             headers: {
-              "content-type":
-                "application/json; charset=utf-8"
+              "content-type": "application/json; charset=utf-8"
+            }
+          }
+        );
+      }
+    }
+
+    /*
+      TEMPORARY ADMIN ROUTE:
+      Public-record ingestion schema migration.
+    */
+    if (
+      url.pathname ===
+      "/api/admin/install-public-records-ingestion"
+    ) {
+      try {
+        const result =
+          await installPublicRecordsIngestionModel(env);
+
+        return new Response(
+          JSON.stringify(result, null, 2),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json; charset=utf-8",
+              "cache-control": "no-store"
+            }
+          }
+        );
+      } catch (error) {
+        return new Response(
+          JSON.stringify(
+            {
+              ok: false,
+              error:
+                "Public-record ingestion migration failed.",
+              detail:
+                error instanceof Error
+                  ? error.message
+                  : String(error)
+            },
+            null,
+            2
+          ),
+          {
+            status: 500,
+            headers: {
+              "content-type": "application/json; charset=utf-8"
             }
           }
         );
