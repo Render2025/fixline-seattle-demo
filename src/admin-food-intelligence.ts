@@ -75,6 +75,172 @@ export async function installFoodIntelligenceModel(env: Env) {
         );
       `);
 
+      const refinedCapabilities = [
+        {
+          id: "cap-meal-preparation",
+          name: "meal preparation",
+          category: "verified_local_capability",
+          description: null,
+          vocabularyVersion: "seattle-v1"
+        },
+        {
+          id: "cap-meal-distribution",
+          name: "meal distribution",
+          category: "verified_local_capability",
+          description: null,
+          vocabularyVersion: "seattle-v1"
+        },
+        {
+          id: "cap-home-delivered-meals",
+          name: "home-delivered meals",
+          category: "verified_local_capability",
+          description: null,
+          vocabularyVersion: "seattle-v1"
+        },
+        {
+          id: "cap-congregate-community-dining",
+          name: "congregate/community dining",
+          category: "verified_local_capability",
+          description: null,
+          vocabularyVersion: "seattle-v1"
+        },
+        {
+          id: "cap-wic-related-nutrition-support",
+          name: "WIC-related nutrition support",
+          category: "verified_local_capability",
+          description: null,
+          vocabularyVersion: "seattle-v1"
+        }
+      ];
+
+      for (const capability of refinedCapabilities) {
+        await client.query(
+          `
+          INSERT INTO capabilities (
+            id,
+            name,
+            category,
+            description,
+            vocabulary_version
+          )
+          VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT (id)
+          DO UPDATE SET
+            name = EXCLUDED.name,
+            category = EXCLUDED.category,
+            description = EXCLUDED.description,
+            vocabulary_version = EXCLUDED.vocabulary_version;
+          `,
+          [
+            capability.id,
+            capability.name,
+            capability.category,
+            capability.description,
+            capability.vocabularyVersion
+          ]
+        );
+      }
+
+      const refinedOrganizationCapabilities = [
+        {
+          id: "orgcap-farestart-meal-preparation",
+          organizationId: "org-farestart",
+          capabilityId: "cap-meal-preparation",
+          availabilityStatus: "UNKNOWN",
+          constraints: {
+            note: "Programs are active; individual program eligibility/enrollment varies."
+          },
+          confidence: null,
+          verifiedAt: "2026-08-28T00:00:00Z",
+          expiresAt: null
+        },
+        {
+          id: "orgcap-farestart-meal-distribution",
+          organizationId: "org-farestart",
+          capabilityId: "cap-meal-distribution",
+          availabilityStatus: "UNKNOWN",
+          constraints: {
+            note: "Programs are active; individual program eligibility/enrollment varies."
+          },
+          confidence: null,
+          verifiedAt: "2026-08-28T00:00:00Z",
+          expiresAt: null
+        },
+        {
+          id: "orgcap-sound-generations-home-delivered-meals",
+          organizationId: "org-sound-generations",
+          capabilityId: "cap-home-delivered-meals",
+          availabilityStatus: "UNKNOWN",
+          constraints: {
+            note: "Programs have age, geography and functional eligibility rules; transport services differ by program."
+          },
+          confidence: null,
+          verifiedAt: "2026-08-28T00:00:00Z",
+          expiresAt: null
+        },
+        {
+          id: "orgcap-sound-generations-congregate-community-dining",
+          organizationId: "org-sound-generations",
+          capabilityId: "cap-congregate-community-dining",
+          availabilityStatus: "UNKNOWN",
+          constraints: {
+            note: "Programs have age, geography and functional eligibility rules; transport services differ by program."
+          },
+          confidence: null,
+          verifiedAt: "2026-08-28T00:00:00Z",
+          expiresAt: null
+        },
+        {
+          id: "orgcap-public-health-seattle-king-county-wic-related-nutrition-support",
+          organizationId: "org-public-health-seattle-king-county",
+          capabilityId: "cap-wic-related-nutrition-support",
+          availabilityStatus: "UNKNOWN",
+          constraints: {
+            note: "Specific services vary by clinic, program, eligibility, and location."
+          },
+          confidence: null,
+          verifiedAt: "2026-08-28T00:00:00Z",
+          expiresAt: null
+        }
+      ];
+
+      for (const mapping of refinedOrganizationCapabilities) {
+        await client.query(
+          `
+          INSERT INTO organization_capabilities (
+            id,
+            organization_id,
+            capability_id,
+            availability_status,
+            constraints_json,
+            confidence,
+            verified_at,
+            expires_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          ON CONFLICT (id)
+          DO UPDATE SET
+            organization_id = EXCLUDED.organization_id,
+            capability_id = EXCLUDED.capability_id,
+            availability_status = EXCLUDED.availability_status,
+            constraints_json = EXCLUDED.constraints_json,
+            confidence = EXCLUDED.confidence,
+            verified_at = EXCLUDED.verified_at,
+            expires_at = EXCLUDED.expires_at;
+          `,
+          [
+            mapping.id,
+            mapping.organizationId,
+            mapping.capabilityId,
+            mapping.availabilityStatus,
+            mapping.constraints,
+            mapping.confidence,
+            mapping.verifiedAt,
+            mapping.expiresAt
+          ]
+        );
+      }
+
       const problemResult = await client.query(`
         SELECT id, problem_number, name
         FROM problems
